@@ -435,7 +435,7 @@ compile_env() {
     }
 
     # Make menuconfig
-    #make ${MAKE_SET_STRING} menuconfig
+    make ${MAKE_SET_STRING} menuconfig
 
     # Set max process
     PROCESS="$(cat /proc/cpuinfo | grep "processor" | wc -l)"

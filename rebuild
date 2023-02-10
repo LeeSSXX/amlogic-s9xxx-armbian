@@ -658,6 +658,8 @@ refactor_files() {
     rm -f var/lib/systemd/deb-systemd-helper-enabled/motd-news.timer.dsh-also
     rm -f etc/systemd/system/timers.target.wants/motd-news.timer
     rm -f etc/update-motd.d/50-motd-news
+    rm -f etc/update-motd.d/40-armbian-updates
+    rm -f etc/update-motd.d/41-armbian-config
 
     # Rebuild symbolic link files (ln -sf ${target} ${symbolic_link_file})
     ln -sf /usr/bin bin
@@ -727,6 +729,9 @@ refactor_files() {
         # Remove [ No end-user support ] prompt in [ /etc/update-motd.d/10-armbian-header ]
         sed -i "s|IMAGE_TYPE=.*|IMAGE_TYPE=stable|g" ${armbian_release_file}
     }
+
+    # Add custom motd for [ /etc/update-motd.d/10-armbian-header ]
+    sed -i '/Welcome/{N;s/.*/echo -e "Welcome to \\e[0;91mMarvin Technology\\x1B[0m QQ Group:\\e[0;91m 636860407\\x1B[0m\\n"/}' etc/update-motd.d/10-armbian-header
 
     # Disable tips of the day for [ /etc/update-motd.d/35-armbian-tips ]
     motd_tips="etc/default/armbian-motd"
