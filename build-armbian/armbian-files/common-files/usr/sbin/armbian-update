@@ -29,15 +29,17 @@
 #========================================= Functions list =========================================
 #
 # error_msg          : Output error message
+#
 # check_depends      : Check dependencies
 # get_textoffset     : Get kernel TEXT_OFFSET
 # init_var           : Initialize all variables
-# rescue_kernel      : Rescue the kernel
 # download_kernel    : Download the kernel
 # check_kernel       : Check kernel files list
 # backup_kernel      : Backup current kernel
 # update_kernel      : Update the kernel
 # update_uboot       : Update the uboot
+#
+# rescue_kernel      : Rescue the kernel
 #
 #===================================== Set default parameters =====================================
 #
@@ -45,6 +47,7 @@
 current_path="${PWD}"
 # Set kernel backup directory
 backup_path="/ddbr/backup"
+auto_backup_kernel="yes"
 # Set kernel rescue temporary directory
 rescue_path="/ddbr/rescue"
 # Set the release check file
@@ -77,7 +80,7 @@ check_depends() {
     echo -e "${STEPS} Start checking dependencies..."
 
     is_missing="0"
-    necessary_packages=("subversion" "tar" "coreutils")
+    necessary_packages=("subversion" "tar" "coreutils" "bsdextrautils")
     i="1"
     for package in ${necessary_packages[*]}; do
         [[ -n "$(dpkg -l | awk '{print $2}' | grep -w "^${package}$" 2>/dev/null)" ]] || is_missing="1"
@@ -125,10 +128,9 @@ init_var() {
     BOOTLOADER_IMG="${BOOTLOADER_IMG}"
     KERNEL_BRANCH="${KERNEL_BRANCH}"
     [[ -z "${PLATFORM}" ]] && error_msg "Invalid PLATFORM: [ ${PLATFORM} ]"
-    echo -e "${INFO} Armbian PLATFORM: [ ${PLATFORM} ]"
 
     # If it is followed by [ : ], it means that the option requires a parameter value
-    get_all_ver="$(getopt "k:v:m:" "${@}")"
+    get_all_ver="$(getopt "k:v:m:b:" "${@}")"
 
     while [[ -n "${1}" ]]; do
         case "${1}" in
@@ -156,6 +158,14 @@ init_var() {
                 error_msg "Invalid -m parameter [ ${2} ]!"
             fi
             ;;
+        -b | --Backup_kenlel)
+            if [[ -n "${2}" ]]; then
+                [[ "${2}" == "no" ]] && auto_backup_kernel="no" || auto_backup_kernel="yes"
+                shift
+            else
+                error_msg "Invalid -b parameter [ ${2} ]!"
+            fi
+            ;;
         *)
             error_msg "Invalid option [ ${1} ]!"
             ;;
@@ -165,24 +175,34 @@ init_var() {
 
     # Automatically complete old version ophub_release_file
     [[ -z "${KERNEL_BRANCH}" ]] && {
-        [[ "${SOC,,}" == "rk3588" ]] && KERNEL_BRANCH="rk3588" || KERNEL_BRANCH="stable"
+        if [[ "${SOC,,}" == "rk3588" ]]; then
+            KERNEL_BRANCH="rk3588"
+        elif [[ "${SOC,,}" == "rk3568" || "${SOC,,}" == "rk3399" ]]; then
+            KERNEL_BRANCH="6.1.y"
+        else
+            KERNEL_BRANCH="stable"
+        fi
         echo "KERNEL_BRANCH='${KERNEL_BRANCH}'" >>${ophub_release_file}
     }
-    # Rockchip rk3588 series, such as rock5b only support rk3588/5.10.y kernel
-    [[ "${SOC,,}" == "rk3588" && "${KERNEL_BRANCH}" != "rk3588" ]] && {
-        echo -e "${WARNING} Kernel [ ${KERNEL_BRANCH} ] is not available for this device, it has been automatically adjusted to [ rk3588 ]."
-        KERNEL_BRANCH="rk3588"
-    }
-    # Adjust kernel directory [ 6.x.y ] to [ stable ]
-    [[ "${KERNEL_BRANCH}" == "6.x.y" ]] && KERNEL_BRANCH="stable"
+
+    # Set kernel download directory
+    if [[ "${KERNEL_BRANCH}" == "rk3588" ]]; then
+        kernel_download_dir="rk3588"
+    elif [[ "${KERNEL_BRANCH}" == "dev" ]]; then
+        kernel_download_dir="dev"
+    else
+        kernel_download_dir="stable"
+    fi
 
     # Display settings results
-    echo -e "${INFO} Set the kernel name: [ ${inputs_kernel} ]"
-    echo -e "${INFO} Set the kernel directory: [ ${KERNEL_BRANCH} ]"
+    echo -e "${INFO} Armbian PLATFORM: [ ${PLATFORM} ]"
+    echo -e "${INFO} Kernel branch: [ ${KERNEL_BRANCH} ]"
+    echo -e "${INFO} Kernel download directory: [ ${kernel_download_dir} ]"
+    echo -e "${INFO} Kernel name: [ ${inputs_kernel} ]"
 
     # Convert kernel library address to svn format
     [[ "${kernel_repo}" == http* && -n "$(echo "${kernel_repo}" | grep "tree/main")" ]] && kernel_repo="${kernel_repo//tree\/main/trunk}"
-    kernel_repo="${kernel_repo}/${KERNEL_BRANCH}"
+    kernel_repo="${kernel_repo}/${kernel_download_dir}"
 
     # Convert kernel library address to API format
     kernel_api="${kernel_repo#*com\/}"
@@ -209,6 +229,253 @@ init_var() {
         ;;
     esac
     DEV_EMMC="/dev/${EMMC_NAME}"
+
+    sync && echo ""
+}
+
+# Download the kernel
+download_kernel() {
+    cd ${current_path}
+    echo -e "${STEPS} Start downloading kernel..."
+
+    # Query the current version
+    current_kernel_signature="$(uname -r)"
+    current_kernel="$(echo "$(uname -r)" | grep -oE '^[1-9].[0-9]{1,3}.[0-9]+')"
+    [[ -z "${current_kernel}" ]] && error_msg "Failed to query the current kernel version."
+    # kernel_verpatch, such as [ 5.10 ]
+    kernel_verpatch="$(echo ${current_kernel} | awk -F '.' '{print $1"."$2}')"
+
+    # Set the kernel path
+    kernel_path="$(mktemp -d)"
+
+    # The local kernel file is preferred, followed by the specified version, and finally the latest version of the same series is used
+    try_tarfile="$(ls *.tar.gz -l 2>/dev/null | grep "^-" | wc -l)"
+    try_boot="$(ls boot-*.tar.gz 2>/dev/null | head -n 1 | grep -oE '[1-9].[0-9]{1,3}.[0-9]+')"
+    [[ "${try_tarfile}" -ge "4" && -n "${try_boot}" ]] && {
+        # Use local kernel
+        inputs_kernel="${try_boot}"
+        echo -e "${INFO} Use local kernel: [ ${inputs_kernel} ]"
+
+        # Move the kernel to the temporary directory
+        echo -e "${INFO} Move kernel files to temporary directory: [ ${kernel_path} ]"
+        [[ -f "sha256sums" ]] && mv -f sha256sums -t ${kernel_path}
+        mv -f *.tar.gz -t ${kernel_path}
+        [[ "${?}" -ne "0" ]] && error_msg "Failed to move local kernel files to [ ${kernel_path} ] directory, stop updating."
+    }
+
+    # Automatically query the latest kernel version
+    [[ -z "${inputs_kernel}" ]] && {
+        # E.g: latest_version="160"
+        latest_version="$(curl -s "${kernel_api}" | grep "name" | grep -oE "${kernel_verpatch}.[0-9]+" | sed -e "s/${kernel_verpatch}.//g" | sort -n | sed -n '$p')"
+        [[ ! -z "${latest_version}" ]] || error_msg "Failed to get the version on the server."
+
+        # Use the latest version of the server's kernel
+        inputs_kernel="${kernel_verpatch}.${latest_version}"
+        echo -e "${INFO} Current version: [ ${current_kernel} ], Latest version: [ ${inputs_kernel} ]."
+    }
+
+    # Kernel version comparison
+    if [[ "${current_kernel}" == "${inputs_kernel}" ]]; then
+        echo -e "${FINISH} Already the latest version, no need to update." && exit 0
+    elif [[ "$(ls ${kernel_path}/*.tar.gz -l 2>/dev/null | grep "^-" | wc -l)" -lt "4" ]]; then
+        echo -e "${INFO} Start downloading the kernel from [ ${kernel_repo/trunk/tree\/main}/${inputs_kernel} ]"
+        echo -e "${INFO} Download the kernel files to the temporary directory: [ ${kernel_path} ]"
+        svn export ${kernel_repo}/${inputs_kernel} ${kernel_path} --force
+        [[ "${?}" -ne "0" ]] && error_msg "Failed to download the kernel files from the server."
+    fi
+
+    sync && echo ""
+}
+
+# Check kernel files list
+check_kernel() {
+    cd ${kernel_path}
+    echo -e "${STEPS} Start checking the kernel..."
+
+    # Check for inapplicable kernels
+    if { [[ "${KERNEL_BRANCH}" == "rk3588" ]] && [[ "${inputs_kernel:0:5}" != "5.10." ]]; } ||
+        { [[ "${KERNEL_BRANCH}" == "6.x.y" ]] && [[ "${inputs_kernel:0:2}" != "6." ]]; } ||
+        { [[ "${KERNEL_BRANCH}" == "5.10.y" ]] && [[ "${inputs_kernel:0:5}" != "5.10." ]]; } ||
+        { [[ "${KERNEL_BRANCH}" == "5.15.y" ]] && [[ "${inputs_kernel:0:5}" != "5.15." && "${inputs_kernel:0:4}" != "5.4." ]]; }; then
+        error_msg "Kernel [ ${inputs_kernel} ] is not available for this device."
+    fi
+
+    # Determine custom kernel filename
+    kernel_boot="$(ls boot-${inputs_kernel}-*.tar.gz 2>/dev/null | head -n 1)"
+    kernel_name="${kernel_boot:5:-7}"
+    KERNEL_VERSION="$(echo ${kernel_name} | grep -oE '^[1-9].[0-9]{1,3}.[0-9]+')"
+    echo -e "${INFO} Kernel name: [ ${kernel_name} ]"
+
+    # Check if the file is added with TEXT_OFFSET patch
+    [[ "${PLATFORM}" == "amlogic" ]] && {
+        get_textoffset "${kernel_path}/${kernel_boot}" "vmlinuz-${kernel_name}"
+        echo -e "${INFO} NEED_OVERLOAD: [ ${NEED_OVERLOAD} ]"
+        if [[ "${NEED_OVERLOAD}" == "yes" ]]; then
+            [[ -n "${UBOOT_OVERLOAD}" && -f "/boot/${UBOOT_OVERLOAD}" ]] || error_msg "The UBOOT_OVERLOAD file is missing and cannot be update."
+        fi
+    }
+
+    # Check the sha256sums file
+    sha256sums_file="sha256sums"
+    sha256sums_check="1"
+    [[ -s "${sha256sums_file}" && -n "$(cat ${sha256sums_file})" ]] || sha256sums_check="0"
+    # Loop check file
+    [[ "${sha256sums_check}" -eq "1" ]] && {
+        echo -e "${INFO} Enable sha256sum checking..."
+
+        kernel_list=("boot" "dtb-${PLATFORM}" "header" "modules")
+        i="1"
+        for kernel_file in ${kernel_list[*]}; do
+            # Set check filename
+            tmp_file="${kernel_file}-${kernel_name}.tar.gz"
+            # Check if file exists
+            [[ -s "${tmp_file}" ]] || error_msg "The [ ${kernel_file} ] file is missing."
+            # Check if the file sha256sum is correct
+            tmp_sha256sum="$(sha256sum "${tmp_file}" | awk '{print $1}')"
+            tmp_checkcode="$(cat ${sha256sums_file} | grep ${tmp_file} | awk '{print $1}')"
+            [[ "${tmp_sha256sum}" == "${tmp_checkcode}" ]] || error_msg "${tmp_file}: sha256sum verification failed."
+            echo -e "${INFO} (${i}/4) [ ${tmp_file} ] file sha256sum check same."
+            let i++
+        done
+    }
+
+    sync && echo ""
+}
+
+# Backup current kernel
+backup_kernel() {
+    echo -e "${STEPS} Start backing up the current kernel..."
+
+    [[ -d "${backup_path}" ]] || mkdir -p ${backup_path}
+    rm -rf ${backup_path}/${current_kernel}
+
+    # Keep the latest 3 kernel backups and delete the others
+    backup_kernel_list=($(ls ${backup_path} -lt | grep "^d" | awk '{print $9}'))
+    [[ "${#backup_kernel_list[*]}" -ge "3" ]] && {
+        for ((i = 2; i < ${#backup_kernel_list[*]}; i++)); do rm -rf ${backup_path}/${backup_kernel_list[$i]}; done
+    }
+
+    # Identify the current kernel files
+    mkdir -p ${backup_path}/${current_kernel}
+
+    # Create temporary file directory
+    kernel_tmp_path="$(mktemp -d)"
+    cd ${kernel_tmp_path}
+
+    # 1. Pack the boot-*.tar.gz file
+    rm -rf *
+    cp -rf /boot/*-${current_kernel_signature} -t .
+    [[ "${?}" -ne "0" ]] && error_msg "(1/4) Failed to copy [ /boot/*-${current_kernel_signature} ] files."
+    rm -rf dtb*
+    chmod +x *
+    tar -czf boot-${current_kernel_signature}.tar.gz *
+    mv -f *.tar.gz ${backup_path}/${current_kernel}
+    [[ "${?}" -ne "0" ]] && error_msg "(1/4) Failed to move [ boot-${current_kernel_signature}.tar.gz ] files."
+    echo -e "${INFO} (1/4) The [ boot-${current_kernel_signature}.tar.gz ] backup successful."
+
+    # 2. Pack the dtb-*.tar.gz file
+    rm -rf *
+    cp -rf /boot/dtb/${PLATFORM}/* -t .
+    [[ "${?}" -ne "0" ]] && error_msg "(2/4) Failed to copy [ /boot/dtb/${PLATFORM}/* ] files."
+    tar -czf dtb-${PLATFORM}-${current_kernel_signature}.tar.gz *
+    mv -f *.tar.gz ${backup_path}/${current_kernel}
+    [[ "${?}" -ne "0" ]] && error_msg "(2/4) Failed to move [ dtb-${PLATFORM}-${current_kernel_signature}.tar.gz ] files."
+    echo -e "${INFO} (2/4) The [ dtb-${PLATFORM}-${current_kernel_signature}.tar.gz ] backup successful."
+
+    # 3. Pack the header-*.tar.gz file
+    rm -rf *
+    cp -rf /usr/src/linux-headers-${current_kernel_signature}/* -t .
+    [[ "${?}" -ne "0" ]] && error_msg "(3/4) Failed to copy [ /usr/src/linux-headers-${current_kernel_signature}/* ] files."
+    tar -czf header-${current_kernel_signature}.tar.gz *
+    mv -f *.tar.gz ${backup_path}/${current_kernel}
+    [[ "${?}" -ne "0" ]] && error_msg "(3/4) Failed to move [ header-${current_kernel_signature}.tar.gz ] files."
+    echo -e "${INFO} (3/4) The [ header-${current_kernel_signature}.tar.gz ] backup successful."
+
+    # 4. Pack the modules-*.tar.gz file
+    rm -rf *
+    cp -rf /usr/lib/modules/${current_kernel_signature} -t .
+    [[ "${?}" -ne "0" ]] && error_msg "(4/4) Failed to copy [ /usr/lib/modules/${current_kernel_signature} ] files."
+    tar -czf modules-${current_kernel_signature}.tar.gz *
+    mv -f *.tar.gz ${backup_path}/${current_kernel}
+    [[ "${?}" -ne "0" ]] && error_msg "(4/4) Failed to move [ modules-${current_kernel_signature}.tar.gz ] files."
+    echo -e "${INFO} (4/4) The [ modules-${current_kernel_signature}.tar.gz ] backup successful."
+
+    # Add sha256sum integrity verification file
+    cd ${backup_path}/${current_kernel}
+    sha256sum * >sha256sums
+    echo -e "${INFO} The [ sha256sums ] file has been generated."
+    echo -e "${INFO} The current kernel backup path: [ ${backup_path}/${current_kernel} ]. It can be deleted if it is not needed."
+
+    sync && echo ""
+}
+
+# Update the kernel
+update_kernel() {
+    cd ${kernel_path}
+    echo -e "${STEPS} Start unpacking the kernel..."
+
+    # Delete the current kernel files
+    rm -f /boot/config-* /boot/initrd.img-* /boot/System.map-* /boot/uInitrd-* /boot/vmlinuz-*
+    rm -rf /boot/uInitrd /boot/Image /boot/zImage /boot/dtb*
+
+    # 01. For /boot five files
+    tar -xzf boot-${kernel_name}.tar.gz -C /boot
+    [[ "${PLATFORM}" == "amlogic" ]] && (cd /boot && cp -f uInitrd-${kernel_name} uInitrd && cp -f vmlinuz-${kernel_name} zImage)
+    [[ "${PLATFORM}" == "rockchip" ]] && (cd /boot && ln -sf uInitrd-${kernel_name} uInitrd && ln -sf vmlinuz-${kernel_name} Image)
+    [[ "${PLATFORM}" == "allwinner" ]] && (cd /boot && cp -f uInitrd-${kernel_name} uInitrd && cp -f vmlinuz-${kernel_name} Image)
+    [[ "$(ls /boot/*${kernel_name}* -l 2>/dev/null | grep "^-" | wc -l)" -ge "4" ]] || error_msg "The /boot files is missing."
+    echo -e "${INFO} (1/4) Unpacking [ boot-${kernel_name}.tar.gz ] done."
+
+    # 02. For /boot/dtb/${PLATFORM}/*
+    [[ -d "/boot/dtb/${PLATFORM}" ]] || mkdir -p /boot/dtb/${PLATFORM}
+    tar -xzf dtb-${PLATFORM}-${kernel_name}.tar.gz -C /boot/dtb/${PLATFORM}
+    [[ "${PLATFORM}" == "rockchip" ]] && ln -sf dtb /boot/dtb-${kernel_name}
+    [[ "$(ls /boot/dtb/${PLATFORM} -l 2>/dev/null | grep "^-" | wc -l)" -ge "2" ]] || error_msg "/boot/dtb/${PLATFORM} files is missing."
+    echo -e "${INFO} (2/4) Unpacking [ dtb-${PLATFORM}-${kernel_name}.tar.gz ] done."
+
+    # 03. For /usr/src/linux-headers-${kernel_name}
+    header_path="linux-headers-${kernel_name}"
+    rm -rf /usr/src/linux-headers-* && mkdir -p "/usr/src/${header_path}"
+    tar -xzf header-${kernel_name}.tar.gz -C /usr/src/${header_path}
+    [[ -d "/usr/src/${header_path}/include" ]] || error_msg "/usr/src/${header_path}/include folder is missing."
+    echo -e "${INFO} (3/4) Unpacking [ header-${kernel_name}.tar.gz ] done."
+
+    # 04. For /usr/lib/modules/${kernel_name}
+    rm -rf /usr/lib/modules/*
+    tar -xzf modules-${kernel_name}.tar.gz -C /usr/lib/modules
+    (cd /usr/lib/modules/${kernel_name}/ && rm -f build source && ln -sf /usr/src/${header_path} build)
+    [[ -d "/usr/lib/modules/${kernel_name}" ]] || error_msg "/usr/lib/modules/${kernel_name} kernel folder is missing."
+    echo -e "${INFO} (4/4) Unpacking [ modules-${kernel_name}.tar.gz ] done."
+
+    # Update release file
+    sed -i "s|^KERNEL_VERSION=.*|KERNEL_VERSION='${KERNEL_VERSION}'|g" ${ophub_release_file}
+    [[ "${auto_mainline_uboot}" == "yes" ]] && sed -i "s|^MLUBOOT_STATUS=.*|MLUBOOT_STATUS='yes'|g" ${ophub_release_file}
+
+    # Delete kernel tmpfiles
+    rm -f *${kernel_name}*.tar.gz sha256sums
+
+    sync && echo ""
+}
+
+# Update the uboot
+update_uboot() {
+    echo -e "${STEPS} Start updating the uboot..."
+
+    # Copy u-boot.ext and u-boot.emmc
+    if [[ "${NEED_OVERLOAD}" == "yes" && -n "${UBOOT_OVERLOAD}" && -f "/boot/${UBOOT_OVERLOAD}" ]]; then
+        echo -e "${INFO} Copy u-boot: [ ${UBOOT_OVERLOAD} ]"
+        [[ ! -f "/boot/u-boot.ext" ]] && cp -f "/boot/${UBOOT_OVERLOAD}" /boot/u-boot.ext
+        [[ ! -f "/boot/u-boot.emmc" ]] && cp -f "/boot/u-boot.ext" /boot/u-boot.emmc
+        chmod +x /boot/u-boot.ext /boot/u-boot.emmc
+    fi
+
+    # Write bootloader
+    if [[ "${auto_mainline_uboot}" == "yes" && -n "${MAINLINE_UBOOT}" && -f "${MAINLINE_UBOOT}" ]]; then
+        echo -e "${INFO} Write Mainline u-boot: [ ${MAINLINE_UBOOT} ]"
+        dd if="${MAINLINE_UBOOT}" of="${DEV_EMMC}" conv=fsync bs=1 count=444 2>/dev/null
+        dd if="${MAINLINE_UBOOT}" of="${DEV_EMMC}" conv=fsync bs=512 skip=1 seek=1 2>/dev/null
+    fi
+    [[ "${?}" -ne "0" ]] && error_msg "Failed to write bootloader using [ dd ]."
 
     sync && echo ""
 }
@@ -285,259 +552,20 @@ rescue_kernel() {
     sync && echo ""
 }
 
-# Download the kernel
-download_kernel() {
-    cd ${current_path}
-    echo -e "${STEPS} Start downloading kernel..."
-
-    # Query the current version
-    current_kernel_signature="$(uname -r)"
-    current_kernel="$(echo "$(uname -r)" | grep -oE '^[1-9].[0-9]{1,3}.[0-9]+')"
-    [[ -z "${current_kernel}" ]] && error_msg "Failed to query the current kernel version."
-    # kernel_verpatch, such as [ 5.10 ]
-    kernel_verpatch="$(echo ${current_kernel} | awk -F '.' '{print $1"."$2}')"
-
-    # Set the kernel path
-    kernel_path="$(mktemp -d)"
-
-    # The local kernel file is preferred, followed by the specified version, and finally the latest version of the same series is used
-    try_tarfile="$(ls *.tar.gz -l 2>/dev/null | grep "^-" | wc -l)"
-    try_boot="$(ls boot-*.tar.gz 2>/dev/null | head -n 1 | grep -oE '[1-9].[0-9]{1,3}.[0-9]+')"
-    [[ "${try_tarfile}" -ge "4" && -n "${try_boot}" ]] && {
-        # Use local kernel
-        inputs_kernel="${try_boot}"
-        echo -e "${INFO} Use local kernel: [ ${inputs_kernel} ]"
-
-        # Move the kernel to the temporary directory
-        echo -e "${INFO} Move kernel files to temporary directory: [ ${kernel_path} ]"
-        [[ -f "sha256sums" ]] && mv -f sha256sums -t ${kernel_path}
-        mv -f *.tar.gz -t ${kernel_path}
-        [[ "${?}" -ne "0" ]] && error_msg "Failed to move local kernel files to [ ${kernel_path} ] directory, stop updating."
-    }
-
-    # Automatically query the latest kernel version
-    [[ -z "${inputs_kernel}" ]] && {
-        # E.g: latest_version="160"
-        latest_version="$(curl -s "${kernel_api}" | grep "name" | grep -oE "${kernel_verpatch}.[0-9]+" | sed -e "s/${kernel_verpatch}.//g" | sort -n | sed -n '$p')"
-        [[ ! -z "${latest_version}" ]] || error_msg "Failed to get the version on the server."
-
-        # Use the latest version of the server's kernel
-        inputs_kernel="${kernel_verpatch}.${latest_version}"
-        echo -e "${INFO} Current version: [ ${current_kernel} ], Latest version: [ ${inputs_kernel} ]."
-    }
-
-    # Kernel version comparison
-    if [[ "${current_kernel}" == "${inputs_kernel}" ]]; then
-        echo -e "${FINISH} Already the latest version, no need to update." && exit 0
-    elif [[ "$(ls ${kernel_path}/*.tar.gz -l 2>/dev/null | grep "^-" | wc -l)" -lt "4" ]]; then
-        echo -e "${INFO} Start downloading the kernel from [ ${kernel_repo/trunk/tree\/main}/${inputs_kernel} ]"
-        echo -e "${INFO} Download the kernel files to the temporary directory: [ ${kernel_path} ]"
-        svn export ${kernel_repo}/${inputs_kernel} ${kernel_path} --force
-        [[ "${?}" -ne "0" ]] && error_msg "Failed to download the kernel files from the server."
-    fi
-
-    sync && echo ""
-}
-
-# Check kernel files list
-check_kernel() {
-    cd ${kernel_path}
-    echo -e "${STEPS} Start checking the kernel..."
-
-    # Rockchip rk3568/rk3399 series, such as r66s/r68s/h66k/h68k/eaidk-610 only support 6.x.y kernel
-    [[ "${SOC,,}" == "rk3568" || "${SOC,,}" == "rk3399" ]] && [[ "${inputs_kernel:0:2}" != "6." ]] && error_msg "Kernel [ ${inputs_kernel} ] is not available for this device."
-    # Rockchip rk3588 series, such as rock5b only support rk3588/5.10.y kernel
-    [[ "${SOC,,}" == "rk3588" && "${inputs_kernel:0:5}" != "5.10." ]] && error_msg "Kernel [ ${inputs_kernel} ] is not available for this device."
-
-    # Determine custom kernel filename
-    kernel_boot="$(ls boot-${inputs_kernel}-*.tar.gz 2>/dev/null | head -n 1)"
-    kernel_name="${kernel_boot/boot-/}" && kernel_name="${kernel_name/.tar.gz/}"
-    KERNEL_VERSION="$(echo ${kernel_name} | grep -oE '^[1-9].[0-9]{1,3}.[0-9]+')"
-    echo -e "${INFO} Kernel name: [ ${kernel_name} ]"
-
-    # Check if the file is added with TEXT_OFFSET patch
-    [[ "${PLATFORM}" == "amlogic" ]] && {
-        get_textoffset "${kernel_path}/${kernel_boot}" "vmlinuz-${kernel_name}"
-        echo -e "${INFO} NEED_OVERLOAD: [ ${NEED_OVERLOAD} ]"
-        if [[ "${NEED_OVERLOAD}" == "yes" ]]; then
-            [[ -n "${UBOOT_OVERLOAD}" && -f "/boot/${UBOOT_OVERLOAD}" ]] || error_msg "The UBOOT_OVERLOAD file is missing and cannot be update."
-        fi
-    }
-
-    # Check the sha256sums file
-    sha256sums_file="sha256sums"
-    sha256sums_check="1"
-    [[ -s "${sha256sums_file}" && -n "$(cat ${sha256sums_file})" ]] || sha256sums_check="0"
-    # Loop check file
-    [[ "${sha256sums_check}" -eq "1" ]] && {
-        echo -e "${INFO} Enable sha256sum checking..."
-
-        kernel_list=("boot" "dtb-${PLATFORM}" "header" "modules")
-        i="1"
-        for kernel_file in ${kernel_list[*]}; do
-            # Set check filename
-            tmp_file="${kernel_file}-${kernel_name}.tar.gz"
-            # Check if file exists
-            [[ -s "${tmp_file}" ]] || error_msg "The [ ${kernel_file} ] file is missing."
-            # Check if the file sha256sum is correct
-            tmp_sha256sum="$(sha256sum "${tmp_file}" | awk '{print $1}')"
-            tmp_checkcode="$(cat ${sha256sums_file} | grep ${tmp_file} | awk '{print $1}')"
-            [[ "${tmp_sha256sum}" == "${tmp_checkcode}" ]] || error_msg "${tmp_file}: sha256sum verification failed."
-            echo -e "${INFO} (${i}/4) [ ${tmp_file} ] file sha256sum check same."
-            let i++
-        done
-    }
-
-    sync && echo ""
-}
-
-# Backup current kernel
-backup_kernel() {
-    echo -e "${STEPS} Start backing up the current kernel..."
-
-    # Identify the current kernel files
-    rm -rf ${backup_path}/${current_kernel}
-    mkdir -p ${backup_path}/${current_kernel}
-
-    # Create temporary file directory
-    kernel_tmp_path="$(mktemp -d)"
-    cd ${kernel_tmp_path}
-
-    # 1. Pack the boot-*.tar.gz file
-    rm -rf *
-    cp -rf /boot/*-${current_kernel_signature} -t .
-    [[ "${?}" -ne "0" ]] && error_msg "(1/4) Failed to copy [ /boot/*-${current_kernel_signature} ] files."
-    rm -rf dtb*
-    chmod +x *
-    tar -czf boot-${current_kernel_signature}.tar.gz *
-    mv -f *.tar.gz ${backup_path}/${current_kernel}
-    [[ "${?}" -ne "0" ]] && error_msg "(1/4) Failed to move [ boot-${current_kernel_signature}.tar.gz ] files."
-    echo -e "${INFO} (1/4) The [ boot-${current_kernel_signature}.tar.gz ] backup successful."
-
-    # 2. Pack the dtb-*.tar.gz file
-    rm -rf *
-    cp -rf /boot/dtb/${PLATFORM}/* -t .
-    [[ "${?}" -ne "0" ]] && error_msg "(2/4) Failed to copy [ /boot/dtb/${PLATFORM}/* ] files."
-    tar -czf dtb-${PLATFORM}-${current_kernel_signature}.tar.gz *
-    mv -f *.tar.gz ${backup_path}/${current_kernel}
-    [[ "${?}" -ne "0" ]] && error_msg "(2/4) Failed to move [ dtb-${PLATFORM}-${current_kernel_signature}.tar.gz ] files."
-    echo -e "${INFO} (2/4) The [ dtb-${PLATFORM}-${current_kernel_signature}.tar.gz ] backup successful."
-
-    # 3. Pack the header-*.tar.gz file
-    rm -rf *
-    cp -rf /usr/src/linux-headers-${current_kernel_signature}/* -t .
-    [[ "${?}" -ne "0" ]] && error_msg "(3/4) Failed to copy [ /usr/src/linux-headers-${current_kernel_signature}/* ] files."
-    tar -czf header-${current_kernel_signature}.tar.gz *
-    mv -f *.tar.gz ${backup_path}/${current_kernel}
-    [[ "${?}" -ne "0" ]] && error_msg "(3/4) Failed to move [ header-${current_kernel_signature}.tar.gz ] files."
-    echo -e "${INFO} (3/4) The [ header-${current_kernel_signature}.tar.gz ] backup successful."
-
-    # 4. Pack the modules-*.tar.gz file
-    rm -rf *
-    cp -rf /usr/lib/modules/${current_kernel_signature} -t .
-    [[ "${?}" -ne "0" ]] && error_msg "(4/4) Failed to copy [ /usr/lib/modules/${current_kernel_signature} ] files."
-    tar -czf modules-${current_kernel_signature}.tar.gz *
-    mv -f *.tar.gz ${backup_path}/${current_kernel}
-    [[ "${?}" -ne "0" ]] && error_msg "(4/4) Failed to move [ modules-${current_kernel_signature}.tar.gz ] files."
-    echo -e "${INFO} (4/4) The [ modules-${current_kernel_signature}.tar.gz ] backup successful."
-
-    # Add sha256sum integrity verification file
-    cd ${backup_path}/${current_kernel}
-    sha256sum * >sha256sums
-    echo -e "${INFO} The [ sha256sums ] file has been generated"
-    echo -e "${INFO} The current kernel backup path: [ ${backup_path}/${current_kernel} ]. It can be deleted if it is not needed."
-
-    sync && echo ""
-}
-
-# Update the kernel
-update_kernel() {
-    cd ${kernel_path}
-    echo -e "${STEPS} Start unpacking the kernel..."
-
-    # Delete the current kernel files
-    rm -f /boot/config-* /boot/initrd.img-* /boot/System.map-* /boot/uInitrd-* /boot/vmlinuz-*
-    rm -rf /boot/uInitrd /boot/Image /boot/zImage /boot/dtb*
-
-    # 01. For /boot five files
-    tar -xzf boot-${kernel_name}.tar.gz -C /boot
-    [[ "${PLATFORM}" == "amlogic" ]] && (cd /boot && cp -f uInitrd-${kernel_name} uInitrd && cp -f vmlinuz-${kernel_name} zImage)
-    [[ "${PLATFORM}" == "rockchip" ]] && (cd /boot && ln -sf uInitrd-${kernel_name} uInitrd && ln -sf vmlinuz-${kernel_name} Image)
-    [[ "$(ls /boot/*${kernel_name}* -l 2>/dev/null | grep "^-" | wc -l)" -ge "4" ]] || error_msg "The /boot files is missing."
-    echo -e "${INFO} (1/4) Unpacking [ boot-${kernel_name}.tar.gz ] done."
-
-    # 02. For /boot/dtb/${PLATFORM}/*
-    mkdir -p /boot/dtb/${PLATFORM}
-    tar -xzf dtb-${PLATFORM}-${kernel_name}.tar.gz -C /boot/dtb/${PLATFORM}
-    [[ "${PLATFORM}" == "rockchip" ]] && ln -sf dtb /boot/dtb-${kernel_name}
-    [[ "$(ls /boot/dtb/${PLATFORM} -l 2>/dev/null | grep "^-" | wc -l)" -ge "2" ]] || error_msg "/boot/dtb/${PLATFORM} files is missing."
-    echo -e "${INFO} (2/4) Unpacking [ dtb-${PLATFORM}-${kernel_name}.tar.gz ] done."
-
-    # 03. For /usr/src/linux-headers-${kernel_name}
-    header_path="linux-headers-${kernel_name}"
-    rm -rf /usr/src/linux-headers-* && mkdir -p "/usr/src/${header_path}"
-    tar -xzf header-${kernel_name}.tar.gz -C /usr/src/${header_path}
-    [[ -d "/usr/src/${header_path}/include" ]] || error_msg "/usr/src/${header_path}/include folder is missing."
-    echo -e "${INFO} (3/4) Unpacking [ header-${kernel_name}.tar.gz ] done."
-
-    # 04. For /usr/lib/modules/${kernel_name}
-    rm -rf /usr/lib/modules/*
-    tar -xzf modules-${kernel_name}.tar.gz -C /usr/lib/modules
-    (cd /usr/lib/modules/${kernel_name}/ && rm -f build source && ln -sf /usr/src/${header_path} build)
-    [[ -d "/usr/lib/modules/${kernel_name}" ]] || error_msg "/usr/lib/modules/${kernel_name} kernel folder is missing."
-    echo -e "${INFO} (4/4) Unpacking [ modules-${kernel_name}.tar.gz ] done."
-
-    # Update release file
-    sed -i "s|^KERNEL_VERSION=.*|KERNEL_VERSION='${KERNEL_VERSION}'|g" ${ophub_release_file}
-    sed -i "s|^KERNEL_BRANCH=.*|KERNEL_BRANCH='${KERNEL_BRANCH}'|g" ${ophub_release_file}
-    [[ "${auto_mainline_uboot}" == "yes" ]] && sed -i "s|^MLUBOOT_STATUS=.*|MLUBOOT_STATUS='yes'|g" ${ophub_release_file}
-
-    # Delete kernel tmpfiles
-    rm -f *${kernel_name}*.tar.gz sha256sums
-
-    sync && echo ""
-}
-
-# Update the uboot
-update_uboot() {
-    echo -e "${STEPS} Start updating the uboot..."
-
-    # Copy u-boot.ext and u-boot.emmc
-    if [[ "${NEED_OVERLOAD}" == "yes" || "${auto_mainline_uboot}" == "yes" ]] && [[ -n "${UBOOT_OVERLOAD}" && -f "/boot/${UBOOT_OVERLOAD}" ]]; then
-        [[ ! -f "/boot/u-boot.ext" ]] && cp -f "/boot/${UBOOT_OVERLOAD}" /boot/u-boot.ext && chmod +x /boot/u-boot.ext
-        [[ ! -f "/boot/u-boot.emmc" ]] && cp -f "/boot/u-boot.ext" /boot/u-boot.emmc && chmod +x /boot/u-boot.emmc
-        echo -e "${INFO} The ${UBOOT_OVERLOAD} file copy is complete."
-    fi
-
-    # Write bootloader
-    if [[ -n "${MAINLINE_UBOOT}" && -f "${MAINLINE_UBOOT}" && "${auto_mainline_uboot}" == "yes" ]]; then
-        echo -e "${INFO} Write Mainline u-boot: [ ${MAINLINE_UBOOT} ]"
-        dd if="${MAINLINE_UBOOT}" of="${DEV_EMMC}" conv=fsync bs=1 count=444 2>/dev/null
-        dd if="${MAINLINE_UBOOT}" of="${DEV_EMMC}" conv=fsync bs=512 skip=1 seek=1 2>/dev/null
-    elif [[ -n "${BOOTLOADER_IMG}" && -f "${BOOTLOADER_IMG}" ]]; then
-        echo -e "${INFO} Write bootloader: [ ${BOOTLOADER_IMG} ]"
-        dd if="${BOOTLOADER_IMG}" of="${DEV_EMMC}" conv=fsync bs=1 count=444 2>/dev/null
-        dd if="${BOOTLOADER_IMG}" of="${DEV_EMMC}" conv=fsync bs=512 skip=1 seek=1 2>/dev/null
-    fi
-    [[ "${?}" -ne "0" ]] && error_msg "Failed to write bootloader using [ dd ]."
-
-    sync && echo ""
-}
-
 # Check script permission
 [[ "$(id -u)" == "0" ]] || error_msg "Please run this script as root: [ sudo $0 ]"
 echo -e "${STEPS} Welcome to the kernel update tool."
 
-if [[ "${1}" == "-r" ]]; then
-    rescue_kernel
-else
+if [[ "${1}" != "-r" ]]; then
     check_depends
     init_var "${@}"
     download_kernel
     check_kernel
-    backup_kernel
+    [[ "${auto_backup_kernel}" == "yes" ]] && backup_kernel
     update_kernel
     [[ "${PLATFORM}" == "amlogic" ]] && update_uboot
+else
+    rescue_kernel
 fi
 
 sync && sleep 3

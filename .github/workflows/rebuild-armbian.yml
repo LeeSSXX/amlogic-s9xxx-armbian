@@ -10,26 +10,26 @@ on:
   workflow_dispatch:
     inputs:
       armbian_url:
-        description: "Set armbian path."
+        description: "Set Armbian file path."
         required: false
         default: ""
       armbian_board:
-        description: "Select Amlogic Board."
+        description: "Select device board."
         required: false
         default: "all"
         type: choice
         options:
           - all
           - s922x_s905x3_s905d_s912_s905l3a
-          - rock5b_r66s_r68s_beikeyun_l1pro
+          - r66s_r68s_h66k_h68k_e25
+          - eaidk-610_king3399_tn3399_kylin3399
+          - vplus_tqc-a01_tanix-tx6
           - a311d
           - s922x
           - s922x-n2
-          - s922x-reva
           - s905x3
           - s905x3-b
           - s905x2
-          - s905x2-km3
           - s912
           - s912-m8s
           - s905d
@@ -46,9 +46,16 @@ on:
           - r68s
           - h66k
           - h68k
+          - e25
           - eaidk-610
+          - king3399
+          - kylin3399
+          - tn3399
           - beikeyun
           - l1pro
+          - vplus
+          - tqc-a01
+          - tanix-tx6
       armbian_kernel:
         description: "Select kernel version."
         required: false
@@ -107,13 +114,15 @@ jobs:
           DEBIAN_FRONTEND: noninteractive
         run: |
           docker rmi `docker images -q`
+          [[ -n "${AGENT_TOOLSDIRECTORY}" ]] && sudo rm -rf "${AGENT_TOOLSDIRECTORY}"
           sudo rm -rf /usr/share/dotnet /etc/apt/sources.list.d /usr/local/lib/android 2>/dev/null
-          sudo -E apt-get -y purge azure-cli ghc* zulu* hhvm llvm* firefox google* dotnet* powershell openjdk* adoptopenjdk* mongodb* dotnet* moby* snapd* || true
-          sudo -E apt-get -qq update -y
-          sudo -E apt-get -qq full-upgrade -y
-          sudo -E apt-get -qq install -y $(curl -fsSL https://is.gd/depend_ubuntu2204_armbian)
-          sudo -E apt-get -qq autoremove --purge
-          sudo -E apt-get -qq clean
+          sudo -E apt-get -y update
+          sudo -E apt-get -y purge azure-cli ghc* zulu* llvm* firefox google* dotnet* powershell openjdk* mongodb* moby* || true
+          sudo -E apt-get -y install $(curl -fsSL https://is.gd/depend_ubuntu2204_armbian)
+          sudo -E systemctl daemon-reload
+          #sudo -E apt-get -y full-upgrade
+          sudo -E apt-get -y autoremove --purge
+          sudo -E apt-get clean
 
           # Get the url of the rebuild armbian file
           armbian_url="${{ inputs.armbian_url }}"

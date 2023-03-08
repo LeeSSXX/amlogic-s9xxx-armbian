@@ -61,15 +61,15 @@ select_source() {
     echo -e "${STEPS} Start selecting docker source..."
     cat <<EOF
 -----------------------------------------------
-ID  SOURCE
+  ID  SOURCE
 -----------------------------------------------
-1   docker.com (default)
-2   aliyun.com
-3   ustc.edu.cn
-4   tencent.com
+  1   docker.com (default)
+  2   aliyun.com
+  3   ustc.edu.cn
+  4   tencent.com
 -----------------------------------------------
 EOF
-    echo -ne "${OPTIONS} Please Input ID: "
+    echo -ne "${OPTIONS} Please Input ID (1/2/3/4): "
     read source_id
     DOCKER_SOURCE="https://download.docker.com/linux"
     if [[ "${source_id}" -eq "2" ]]; then
@@ -110,7 +110,9 @@ docker_install() {
 
     echo -e "${STEPS} Install docker accelerator..."
     [[ -d "/etc/docker" ]] || mkdir -p /etc/docker
-    sudo cat >/etc/docker/daemon.json <<EOF
+    if [[ "${source_id}" -ne "1" ]]; then
+        # Docker image in China
+        sudo cat >/etc/docker/daemon.json <<EOF
 {
   "bip": "172.31.0.1/24",
   "data-root": "/var/lib/docker/",
@@ -126,6 +128,22 @@ docker_install() {
    ]
 }
 EOF
+    else
+        # Docker official image
+        sudo cat >/etc/docker/daemon.json <<EOF
+{
+  "bip": "172.31.0.1/24",
+  "data-root": "/var/lib/docker/",
+  "log-level": "warn",
+  "log-driver": "json-file",
+  "log-opts": {
+     "max-size": "10m",
+     "max-file": "5"
+   }
+}
+EOF
+    fi
+
     sync
     sudo systemctl daemon-reload
     sudo systemctl restart docker
