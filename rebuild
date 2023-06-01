@@ -830,10 +830,6 @@ refactor_rootfs() {
     # Explicitly disable resizing for Amlogic device [ /usr/lib/armbian/armbian-resize-filesystem ], use armbian-tf settings
     [[ "${PLATFORM}" == "amlogic" ]] && echo "no" >root/.no_rootfs_resize
 
-    # Reduce network latency [ A start job is running for raise network interfaces (5 mins 1 sec) ]
-    network_service="usr/lib/systemd/system/networking.service"
-    sed -i "s|^#*TimeoutStartSec=.*|TimeoutStartSec=10sec|g" ${network_service}
-
     # Add tasks that need to be executed on initial startup
     armbian_firstrun="usr/lib/armbian/armbian-firstrun"
     sed -i '/\/etc\/armbian-release/i\[[ -x "/usr/sbin/armbian-fix" ]] && . /usr/sbin/armbian-fix' ${armbian_firstrun}
