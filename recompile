@@ -81,7 +81,7 @@ armbian_rootfs_file="armbian.tar.xz"
 # Set the toolchain path
 toolchain_path="/usr/local/toolchain"
 # Set the default cross-compilation toolchain: [ gcc / clang ]
-toolchain_name="gcc"
+toolchain_name="clang"
 
 # QEMU BINARY
 qemu_binary_arm64="qemu-aarch64-static"
@@ -479,7 +479,7 @@ compile_env() {
     }
 
     # Make menuconfig
-    #make ${MAKE_SET_STRING} menuconfig
+    make ${MAKE_SET_STRING} menuconfig
 
     # Set max process
     PROCESS="$(cat /proc/cpuinfo | grep "processor" | wc -l)"
