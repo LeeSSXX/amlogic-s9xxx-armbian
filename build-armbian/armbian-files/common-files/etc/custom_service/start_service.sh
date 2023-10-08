@@ -42,10 +42,24 @@ ophub_release_file="/etc/ophub-release"
         echo "[$(date +"%Y.%m.%d.%H:%M:%S")] The network optimization service started successfully." >>${custom_log}
 }
 
+# Led display control
+openvfd_enable="no"
+openvfd_boxid="15"
+[[ "${openvfd_enable}" == "yes" && -n "${openvfd_boxid}" && -x "/usr/sbin/armbian-openvfd" ]] && {
+    armbian-openvfd ${openvfd_boxid} &&
+        echo "[$(date +"%Y.%m.%d.%H:%M:%S")] The openvfd service started successfully." >>${custom_log}
+}
+
 # For vplus(Allwinner h6) led color lights
 [[ -x "/usr/bin/rgb-vplus" ]] && {
-    rgb-vplus --RedName=RED --GreenName=GREEN --BlueName=BLUE &
+    rgb-vplus --RedName=RED --GreenName=GREEN --BlueName=BLUE 2>/dev/null &
     echo "[$(date +"%Y.%m.%d.%H:%M:%S")] The LED of Vplus is enabled successfully." >>${custom_log}
+}
+
+# For pveproxy startup service
+[[ -n "$(dpkg -l | awk '{print $2}' | grep -w "^pve-manager$")" ]] && {
+    sudo systemctl restart pveproxy &&
+        echo "[$(date +"%Y.%m.%d.%H:%M:%S")] The pveproxy service started successfully." >>${custom_log}
 }
 
 # Add custom log

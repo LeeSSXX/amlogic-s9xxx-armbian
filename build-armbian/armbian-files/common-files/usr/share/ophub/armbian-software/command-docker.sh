@@ -43,6 +43,8 @@
 # software_122  : For navidrome:4533
 # software_123  : For alist:5244
 # software_124  : For qinglong:5700
+# software_125  : For chatgpt-web:3002
+# software_126  : For pandora(chatgpt):3003
 #
 #============================================================================
 
@@ -63,39 +65,50 @@ software_101() {
 
 # For portainer
 software_102() {
-    # Installation options
-    echo -ne "${OPTIONS} Do you choose Chinese=(c) or English=(e) version of portainer? (c/e): "
-    read optid
-    optid="${optid/C/c}" && optid="${optid/E/e}"
-    if [[ "${optid}" == "c" ]]; then
-        # Instructions(Chinese): https://hub.docker.com/r/6053537/portainer-ce
-        image_name="6053537/portainer-ce:linux-arm64"
-        image_port="-p 9000:9000"
-        image_url="http://ip:9000"
-    else
-        # Instructions(English): https://hub.docker.com/r/portainer/portainer-ce
-        image_name="portainer/portainer-ce:latest"
-        image_port="-p 8000:8000 -p 9443:9443"
-        image_url="https://ip:9443"
-    fi
-
     # Set basic information
     container_name="portainer"
+    image_name="portainer/portainer-ce:latest"
     install_path="${docker_path}/${container_name}"
 
     case "${software_manage}" in
     install)
         echo -e "${STEPS} Start installing the docker image: [ ${container_name} ]..."
+
+        # Prompt users whether to use their own SSL certificate
+        echo -ne "${OPTIONS} Using your own SSL certificate? (y/N): "
+        read use_ssl
+        [[ "${use_ssl,,}" =~ ^[y] ]] && use_ssl="yes" || use_ssl="no"
+        echo -e "${INFO} Your own SSL Certificate Selection: [ ${use_ssl} ]"
+
+        # Instructions(English): https://hub.docker.com/r/portainer/portainer-ce
         docker volume create ${container_name}_data
-        docker run -d --name ${container_name} \
-            ${image_port} \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            -v ${install_path}/portainer_data:/data \
-            --restart always \
-            ${image_name}
+        if [[ "${use_ssl}" == "yes" ]]; then
+            # https://docs.portainer.io/advanced/ssl
+            docker run -d --name ${container_name} \
+                --restart always \
+                -p 8000:8000 \
+                -p 9443:9443 \
+                -v /var/run/docker.sock:/var/run/docker.sock \
+                -v ${install_path}/portainer_data:/data \
+                -v ${install_path}/certs:/certs \
+                ${image_name} \
+                --sslcert /certs/portainer.crt \
+                --sslkey /certs/portainer.key
+        else
+            docker run -d --name ${container_name} \
+                --restart always \
+                -p 8000:8000 \
+                -p 9443:9443 \
+                -v /var/run/docker.sock:/var/run/docker.sock \
+                -v ${install_path}/portainer_data:/data \
+                ${image_name}
+        fi
 
         sync && sleep 3
-        echo -e "${NOTE} The ${container_name} address: [ ${image_url} ]"
+        [[ "${use_ssl}" == "yes" ]] && {
+            echo -e "${NOTE} Please place your SSL certificate in: [ ${install_path}/certs/portainer.crt & portainer.key]"
+        }
+        echo -e "${NOTE} The ${container_name} address: [ https://${my_address}:9443 ]"
         echo -e "${SUCCESS} The ${container_name} installed successfully."
         exit 0
         ;;
@@ -130,7 +143,7 @@ software_103() {
         sudo ufw allow 8001/tcp 2>/dev/null
 
         sync && sleep 3
-        echo -e "${NOTE} The ${container_name} address: [ http://ip:8001 ]"
+        echo -e "${NOTE} The ${container_name} address: [ http://${my_address}:8001 ]"
         echo -e "${NOTE} The ${container_name} account: [ username:admin@yacht.local  /  password:pass ]"
         echo -e "${NOTE} The ${container_name} website: [ https://yacht.sh ]"
         echo -e "${NOTE} The ${container_name} template: [ https://raw.githubusercontent.com/SelfhostedPro/selfhosted_templates/yacht/Template/template.json ]"
@@ -191,7 +204,7 @@ software_104() {
         #bash <(curl -fsSL ${tr_cn_url}) ${install_path}
 
         sync && sleep 3
-        echo -e "${NOTE} The ${container_name} address: [ http://ip:9091 ]"
+        echo -e "${NOTE} The ${container_name} address: [ http://${my_address}:9091 ]"
         echo -e "${NOTE} The ${container_name} account: [ username:${tr_user}  /  password:${tr_pass} ]"
         echo -e "${SUCCESS} The ${container_name} installed successfully."
         exit 0
@@ -227,7 +240,7 @@ software_105() {
             ${image_name}
 
         sync && sleep 3
-        echo -e "${NOTE} The ${container_name} address: [ http://ip:8080 ]"
+        echo -e "${NOTE} The ${container_name} address: [ http://${my_address}:8080 ]"
         echo -e "${NOTE} The ${container_name} account: [ username:admin  /  password:adminadmin ]"
         echo -e "${SUCCESS} The ${container_name} installed successfully."
         exit 0
@@ -262,7 +275,7 @@ software_106() {
             ${image_name}
 
         sync && sleep 3
-        echo -e "${NOTE} The ${container_name} address [ http://ip:8088 ]"
+        echo -e "${NOTE} The ${container_name} address [ http://${my_address}:8088 ]"
         echo -e "${SUCCESS} ${container_name} installed successfully."
         exit 0
         ;;
@@ -298,7 +311,7 @@ software_107() {
             ${image_name}
 
         sync && sleep 3
-        echo -e "${NOTE} The ${container_name} address [ http://ip:8096  /  https://ip:8920 ]"
+        echo -e "${NOTE} The ${container_name} address [ http://${my_address}:8096  /  https://${my_address}:8920 ]"
         echo -e "${SUCCESS} ${container_name} installed successfully."
         exit 0
         ;;
@@ -327,13 +340,14 @@ software_108() {
             -e TZ=${docker_tz} \
             -p 8123:8123 \
             -v ${install_path}/config:/config \
+            -v ${install_path}/media:/media \
             -v /run/dbus:/run/dbus:ro \
             --restart unless-stopped \
             ${image_name}
 
         sync && sleep 3
         echo -e "${NOTE} The ${container_name} app [ Home Assistant ]"
-        echo -e "${NOTE} The ${container_name} address [ http://ip:8123 ]"
+        echo -e "${NOTE} The ${container_name} address [ http://${my_address}:8123 ]"
         echo -e "${SUCCESS} ${container_name} installed successfully."
         exit 0
         ;;
@@ -365,7 +379,7 @@ software_109() {
             ${image_name}
 
         sync && sleep 3
-        echo -e "${NOTE} The ${container_name} address [ http://ip:8081 ]"
+        echo -e "${NOTE} The ${container_name} address [ http://${my_address}:8081 ]"
         echo -e "${SUCCESS} ${container_name} installed successfully."
         exit 0
         ;;
@@ -398,7 +412,7 @@ software_110() {
             ${image_name}
 
         sync && sleep 3
-        echo -e "${NOTE} The ${container_name} address [ http://ip:5050 ]"
+        echo -e "${NOTE} The ${container_name} address [ http://${my_address}:5050 ]"
         echo -e "${SUCCESS} ${container_name} installed successfully."
         exit 0
         ;;
@@ -431,7 +445,7 @@ software_111() {
             ${image_name}
 
         sync && sleep 3
-        echo -e "${NOTE} The ${container_name} address [ http://ip:8989 ]"
+        echo -e "${NOTE} The ${container_name} address [ http://${my_address}:8989 ]"
         echo -e "${SUCCESS} ${container_name} installed successfully."
         exit 0
         ;;
@@ -464,7 +478,7 @@ software_112() {
             ${image_name}
 
         sync && sleep 3
-        echo -e "${NOTE} The ${container_name} address [ http://ip:7878 ]"
+        echo -e "${NOTE} The ${container_name} address [ http://${my_address}:7878 ]"
         echo -e "${SUCCESS} ${container_name} installed successfully."
         exit 0
         ;;
@@ -501,7 +515,7 @@ software_113() {
             ${image_name}
 
         sync && sleep 3
-        echo -e "${NOTE} The ${container_name} address [ http://ip:8384 ]"
+        echo -e "${NOTE} The ${container_name} address [ http://${my_address}:8384 ]"
         echo -e "${SUCCESS} ${container_name} installed successfully."
         exit 0
         ;;
@@ -534,7 +548,7 @@ software_114() {
             ${image_name}
 
         sync && sleep 3
-        echo -e "${NOTE} The ${container_name} address [ http://ip:8002 ]"
+        echo -e "${NOTE} The ${container_name} address [ http://${my_address}:8002 ]"
         echo -e "${NOTE} The ${container_name} account: [ username:admin  /  password:admin ]"
         echo -e "${SUCCESS} ${container_name} installed successfully."
         exit 0
@@ -567,7 +581,7 @@ software_115() {
             ${image_name}
 
         sync && sleep 3
-        echo -e "${NOTE} The ${container_name} address [ http://ip:8003  /  https://ip:8004 ]"
+        echo -e "${NOTE} The ${container_name} address [ http://${my_address}:8003  /  https://${my_address}:8004 ]"
         echo -e "${SUCCESS} ${container_name} installed successfully."
         exit 0
         ;;
@@ -598,7 +612,7 @@ software_116() {
             ${image_name}
 
         sync && sleep 3
-        echo -e "${NOTE} The ${container_name} address [ http://ip:1880 ]"
+        echo -e "${NOTE} The ${container_name} address [ http://${my_address}:1880 ]"
         echo -e "${SUCCESS} ${container_name} installed successfully."
         exit 0
         ;;
@@ -642,7 +656,7 @@ EOF
             ${image_name}
 
         sync && sleep 3
-        echo -e "${NOTE} The ${container_name}  address [ http://ip:1883  /  http://ip:9001 ]"
+        echo -e "${NOTE} The ${container_name}  address [ http://${my_address}:1883  /  http://${my_address}:9001 ]"
         echo -e "${NOTE} The ${container_name} tutorial [ https://www.mosquitto.org/ ]"
         echo -e "${NOTE} The ${container_name}  MQTT.fx [ https://softblade.de/en/download-2/ ]"
         echo -e "${SUCCESS} ${container_name} installed successfully."
@@ -676,7 +690,14 @@ software_118() {
             [[ -n "${gw}" ]] && my_gateway="${gw}"
 
             my_subnet="${my_gateway%.*}.0"
-            [[ -n "$(ifconfig | grep 'br0')" ]] && parent_lan="br0" || parent_lan="eth0"
+            if [[ -n "$(ifconfig | grep -oE '^br0:')" ]]; then
+                parent_lan="br0"
+            elif [[ -n "$(ifconfig | grep -oE '^vmbr0:')" ]]; then
+                parent_lan="vmbr0"
+            else
+                parent_lan="eth0"
+            fi
+
             docker network create -d macvlan --subnet=${my_subnet}/24 --gateway=${my_gateway} -o parent=${parent_lan} macnet
         }
 
@@ -732,7 +753,7 @@ software_119() {
             ${image_name}
 
         sync && sleep 3
-        echo -e "${NOTE} The ${container_name} address [ http://ip:19999 ]"
+        echo -e "${NOTE} The ${container_name} address [ http://${my_address}:19999 ]"
         echo -e "${SUCCESS} ${container_name} installed successfully."
         exit 0
         ;;
@@ -767,7 +788,7 @@ software_120() {
             ${image_name}
 
         sync && sleep 3
-        echo -e "${NOTE} The ${container_name} address [ http://ip:2345 ]"
+        echo -e "${NOTE} The ${container_name} address [ http://${my_address}:2345 ]"
         echo -e "${SUCCESS} ${container_name} installed successfully."
         exit 0
         ;;
@@ -806,9 +827,9 @@ software_121() {
 
         sync && sleep 3
         echo -e "${NOTE} The ${container_name} Usage [ https://github.com/infrastlabs/docker-headless ]"
-        echo -e "${NOTE} The ${container_name} noVnc [ http://ip:10081 ], PASS [ headless ], ReadOnly [ View123 ]"
-        echo -e "${NOTE} The ${container_name} RDP [ ip:10089 ]"
-        echo -e "${NOTE} The ${container_name} SSH [ ssh -p 10022 headless@ip ]"
+        echo -e "${NOTE} The ${container_name} noVnc [ http://${my_address}:10081 ], PASS [ headless ], ReadOnly [ View123 ]"
+        echo -e "${NOTE} The ${container_name} RDP [ ${my_address}:10089 ]"
+        echo -e "${NOTE} The ${container_name} SSH [ ssh -p 10022 headless@${my_address} ]"
         echo -e "${SUCCESS} ${container_name} installed successfully."
         exit 0
         ;;
@@ -839,7 +860,7 @@ software_122() {
             ${image_name}
 
         sync && sleep 3
-        echo -e "${NOTE} The ${container_name} address [ http://ip:4533 ]"
+        echo -e "${NOTE} The ${container_name} address [ http://${my_address}:4533 ]"
         echo -e "${SUCCESS} ${container_name} installed successfully."
         exit 0
         ;;
@@ -870,7 +891,7 @@ software_123() {
             ${image_name}
 
         sync && sleep 3
-        echo -e "${NOTE} The ${container_name} address [ http://ip:5244 ]"
+        echo -e "${NOTE} The ${container_name} address [ http://${my_address}:5244 ]"
         echo -e "${NOTE} View the initialization account and password commands [ docker exec -it alist ./alist password ]"
         echo -e "${SUCCESS} ${container_name} installed successfully."
         exit 0
@@ -903,7 +924,86 @@ software_124() {
             ${image_name}
 
         sync && sleep 3
-        echo -e "${NOTE} The ${container_name} address [ http://ip:5700 ]"
+        echo -e "${NOTE} The ${container_name} address [ http://${my_address}:5700 ]"
+        echo -e "${SUCCESS} ${container_name} installed successfully."
+        exit 0
+        ;;
+    update) docker_update ;;
+    remove) docker_remove ;;
+    *) error_msg "Invalid input parameter: [ ${@} ]" ;;
+    esac
+}
+
+# For chatgpt-web
+software_125() {
+    # Set basic information
+    container_name="chatgpt-web"
+    image_name="chenzhaoyu94/chatgpt-web:latest"
+    install_path="${docker_path}/${container_name}"
+
+    case "${software_manage}" in
+    install)
+        echo -e "${STEPS} Start installing the docker image: [ ${container_name} ]..."
+
+        # Set your OPENAI_API_KEY
+        echo -ne "${OPTIONS} Please input your OPENAI_API_KEY, such as sk-xxxxx: "
+        read oak
+        [[ -n "${oak}" ]] && your_api_key="${oak}" || error_msg "OPENAI_API_KEY is invalid."
+
+        # Set your login password
+        echo -ne "${OPTIONS} Please input your login password: "
+        read pw
+        [[ -n "${pw}" ]] && your_password="${pw}" || error_msg "PassWord is invalid."
+
+        # Instructions: https://hub.docker.com/r/chenzhaoyu94/chatgpt-web
+        docker run -d --name=${container_name} \
+            -p 3002:3002 \
+            -e PUID=${docker_puid} \
+            -e PGID=${docker_pgid} \
+            -e TZ=${docker_tz} \
+            -e TIMEOUT_MS=100000 \
+            -e MAX_REQUEST_PER_HOUR=0 \
+            -e OPENAI_API_KEY=${your_api_key} \
+            -e AUTH_SECRET_KEY=${your_password} \
+            --restart unless-stopped \
+            ${image_name}
+
+        sync && sleep 3
+        echo -e "${NOTE} The ${container_name} address [ http://${my_address}:3002 ]"
+        echo -e "${SUCCESS} ${container_name} installed successfully."
+        exit 0
+        ;;
+    update) docker_update ;;
+    remove) docker_remove ;;
+    *) error_msg "Invalid input parameter: [ ${@} ]" ;;
+    esac
+}
+
+# For pandora(chatgpt):3003
+software_126() {
+    # Set basic information
+    container_name="pandora"
+    image_name="pengzhile/pandora:latest"
+    install_path="${docker_path}/${container_name}"
+
+    case "${software_manage}" in
+    install)
+        echo -e "${STEPS} Start installing the docker image: [ ${container_name} ]..."
+
+        # Instructions: https://hub.docker.com/r/pengzhile/pandora
+        docker run -d --name=${container_name} \
+            -p 3003:3003 \
+            -e PUID=${docker_puid} \
+            -e PGID=${docker_pgid} \
+            -e TZ=${docker_tz} \
+            -e PANDORA_CLOUD=cloud \
+            -e PANDORA_SERVER=0.0.0.0:3003 \
+            --restart unless-stopped \
+            ${image_name}
+
+        sync && sleep 3
+        echo -e "${NOTE} The ${container_name} address [ http://${my_address}:3003 ]"
+        echo -e "${NOTE} Get your Access Token [ https://github.com/pengzhile/pandora ]"
         echo -e "${SUCCESS} ${container_name} installed successfully."
         exit 0
         ;;

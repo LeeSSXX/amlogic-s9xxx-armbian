@@ -17,20 +17,17 @@ on:
         type: choice
         options:
           - unifreq
-          - kernel.org
       kernel_version:
         description: "Select kernel version"
         required: false
-        default: "5.15.85_6.1.1"
+        default: "5.15.1_6.1.1"
         type: choice
         options:
-          - 5.4.225_5.10.160_5.15.85
-          - 5.4.225_5.10.160
-          - 5.10.160_5.15.85
-          - 5.15.85_6.1.1
-          - 5.4.225
-          - 5.10.160
-          - 5.15.85
+          - 5.4.1_5.10.1
+          - 5.15.1_6.1.1
+          - 5.4.1
+          - 5.10.1
+          - 5.15.1
           - 6.1.1
       kernel_auto:
         description: "Auto use the latest kernel"
@@ -48,7 +45,7 @@ on:
       kernel_toolchain:
         description: "Select the compilation toolchain"
         required: false
-        default: "clang"
+        default: "gcc"
         type: choice
         options:
           - clang
@@ -57,10 +54,10 @@ on:
         description: "Set the kernel custom signature"
         required: false
         default: "-ophub"
-      kernel_config:
-        description: "Set the path of kernel .config"
-        required: false
-        default: ""
+        type: choice
+        options:
+          - -ophub
+          - -yourname
 
 env:
   TZ: America/New_York
@@ -92,7 +89,7 @@ jobs:
           sudo timedatectl set-timezone "${TZ}"
           echo "status=success" >> ${GITHUB_OUTPUT}
 
-      - name: Compile the kernel
+      - name: Compile the kernel [ ${{ inputs.kernel_version }} ]
         uses: ophub/amlogic-s9xxx-armbian@main
         if: ${{ steps.init.outputs.status }} == 'success' && !cancelled()
         with:
@@ -101,17 +98,18 @@ jobs:
           kernel_version: ${{ inputs.kernel_version }}
           kernel_auto: ${{ inputs.kernel_auto }}
           kernel_package: ${{ inputs.kernel_package }}
-          kernel_toolchain: ${{ inputs.kernel_toolchain }}
           kernel_sign: ${{ inputs.kernel_sign }}
-          kernel_config: ${{ inputs.kernel_config }}
+          kernel_toolchain: ${{ inputs.kernel_toolchain }}
 
       - name: Upload Kernel to Release
         uses: ncipollo/release-action@main
         if: ${{ env.PACKAGED_STATUS }} == 'success' && !cancelled()
         with:
-          tag: kernel_${{ env.PACKAGED_OUTPUTTAGS }}
+          tag: kernel_stable
           artifacts: ${{ env.PACKAGED_OUTPUTPATH }}/*
           allowUpdates: true
+          removeArtifacts: false
+          replacesArtifacts: true
           token: ${{ secrets.GH_TOKEN }}
           body: |
             The kernel can be used to compile Armbian and OpenWrt.

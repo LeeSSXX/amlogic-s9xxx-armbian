@@ -9,10 +9,11 @@
 # https://github.com/ophub/amlogic-s9xxx-armbian
 #
 # Description: Run on Armbian, Compile the kernel.
-# Copyright (C) 2021- https://github.com/unifreq
-# Copyright (C) 2021- https://github.com/ophub/amlogic-s9xxx-armbian
+# Copyright (C) 2021~ https://www.kernel.org
+# Copyright (C) 2021~ https://github.com/unifreq
+# Copyright (C) 2021~ https://github.com/ophub/amlogic-s9xxx-armbian
 #
-# Command: armbian-kernel -update && armbian-kernel -k 5.10.125
+# Command: armbian-kernel
 # Command optional parameters please refer to the source code repository
 #
 #================================= Functions list =================================
@@ -22,8 +23,9 @@
 # init_var           : Initialize all variables
 # toolchain_check    : Check and install the toolchain
 # query_version      : Query the latest kernel version
-#
+# apply_patch        : Apply custom kernel patches
 # get_kernel_source  : Get the kernel source code
+#
 # headers_install    : Deploy the kernel headers file
 # compile_env        : Set up the compile kernel environment
 # compile_dtbs       : Compile the dtbs
@@ -44,31 +46,39 @@ compile_path="${current_path}/compile-kernel"
 kernel_path="${compile_path}/kernel"
 config_path="${compile_path}/tools/config"
 script_path="${compile_path}/tools/script"
+kernel_patch_path="${compile_path}/tools/patch"
 out_kernel="${compile_path}/output"
-ophub_release_file="/etc/ophub-release"
-arch_info="$(arch)"
-host_release="$(cat /etc/os-release | grep '^VERSION_CODENAME=.*' | cut -d"=" -f2)"
+tmp_backup_path="/ddbr/tmp"
+boot_backup_path="${tmp_backup_path}/boot"
+modules_backup_path="${tmp_backup_path}/modules"
 
-# Set the default value of the [ -r ] parameter
-# When set to [ -r kernel.org ], Kernel download from kernel.org
-kernel_org_repo="https://cdn.kernel.org/pub/linux/kernel/v5.x/"
+# Set the system file path to be used
+arch_info="$(uname -m)"
+host_release="$(cat /etc/os-release | grep '^VERSION_CODENAME=.*' | cut -d"=" -f2)"
+initramfs_conf="/etc/initramfs-tools/update-initramfs.conf"
+ophub_release_file="/etc/ophub-release"
+
 # Set the default for downloading kernel sources from github.com
 repo_owner="unifreq"
 repo_branch="main"
-build_kernel=("5.10.125" "5.15.50")
+build_kernel=("6.1.1" "5.15.1")
+# Set whether to use the latest kernel, options: [ true / false ]
 auto_kernel="true"
+# Set whether to apply custom kernel patches, options: [ true / false ]
+auto_patch="false"
+# Set custom signature for the kernel
 custom_name="-ophub"
-# Set the kernel compile object, options: dtbs / all
+# Set the kernel compile object, options: [ dtbs / all ]
 package_list="all"
 
 # Compile toolchain download mirror, run on Armbian
 dev_repo="https://github.com/ophub/kernel/releases/download/dev"
 # Arm GNU Toolchain source: https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads
-gun_file="arm-gnu-toolchain-12.2.rel1-aarch64-aarch64-none-elf.tar.xz"
+gun_file="arm-gnu-toolchain-12.3.rel1-aarch64-aarch64-none-elf.tar.xz"
 # Set the toolchain path
 toolchain_path="/usr/local/toolchain"
 # Set the default cross-compilation toolchain: [ gcc / clang ]
-toolchain_name="clang"
+toolchain_name="gcc"
 
 # Set font color
 STEPS="[\033[95m STEPS \033[0m]"
@@ -88,16 +98,16 @@ init_var() {
     echo -e "${STEPS} Start Initializing Variables..."
 
     # If it is followed by [ : ], it means that the option requires a parameter value
-    get_all_ver="$(getopt "k:a:n:p:r:t:" "${@}")"
+    get_all_ver="$(getopt "k:a:n:m:p:r:t:" "${@}")"
 
     while [[ -n "${1}" ]]; do
         case "${1}" in
         -k | --kernel)
             if [[ -n "${2}" ]]; then
-                oldIFS=$IFS
-                IFS=_
+                oldIFS="${IFS}"
+                IFS="_"
                 build_kernel=(${2})
-                IFS=$oldIFS
+                IFS="${oldIFS}"
                 shift
             else
                 error_msg "Invalid -k parameter [ ${2} ]!"
@@ -114,15 +124,23 @@ init_var() {
         -n | --customName)
             if [[ -n "${2}" ]]; then
                 custom_name="${2// /}"
-                [[ ${custom_name:0:1} != "-" ]] && custom_name="-${custom_name}"
+                [[ "${custom_name:0:1}" != "-" ]] && custom_name="-${custom_name}"
                 shift
             else
                 error_msg "Invalid -n parameter [ ${2} ]!"
             fi
             ;;
-        -p | --PackageList)
+        -m | --MakePackage)
             if [[ -n "${2}" ]]; then
                 package_list="${2}"
+                shift
+            else
+                error_msg "Invalid -m parameter [ ${2} ]!"
+            fi
+            ;;
+        -p | --AutoPatch)
+            if [[ -n "${2}" ]]; then
+                auto_patch="${2}"
                 shift
             else
                 error_msg "Invalid -p parameter [ ${2} ]!"
@@ -187,29 +205,11 @@ toolchain_check() {
     # Download the cross-compilation toolchain: [ clang / gcc ]
     [[ -d "/etc/apt/sources.list.d" ]] || mkdir -p /etc/apt/sources.list.d
     if [[ "${toolchain_name}" == "clang" ]]; then
-        # Set llvm version
-        llvm_version="14"
-        echo -e "${INFO} Start installing the [ llvm: ${llvm_version} ] toolchain..."
-
-        # Add apt source for llvm
-        llvm_toolchain_list="/etc/apt/sources.list.d/llvm-toolchain.list"
-        echo "deb http://apt.llvm.org/${host_release}/ llvm-toolchain-${host_release}-${llvm_version} main" >${llvm_toolchain_list}
-        echo "deb-src http://apt.llvm.org/${host_release}/ llvm-toolchain-${host_release}-${llvm_version} main" >>${llvm_toolchain_list}
-        [[ -s "${llvm_toolchain_list}" ]] || error_msg "failed to add apt source: [ ${llvm_toolchain_list} ]"
-        # Add gpg key for llvm
-        llvm_toolchain_asc="/etc/apt/trusted.gpg.d/llvm-toolchain.asc"
-        curl -sL "https://apt.llvm.org/llvm-snapshot.gpg.key" -o "${llvm_toolchain_asc}"
-        [[ -s "${llvm_toolchain_asc}" ]] || error_msg "failed to add gpg key: [ ${llvm_toolchain_asc} ]"
-
-        # Set up the installation package, refer to the source: https://apt.llvm.org/
-        llvm_pkg="\
-        clang-${llvm_version} lldb-${llvm_version} lld-${llvm_version} clangd-${llvm_version} clang-tidy-${llvm_version} \
-        clang-format-${llvm_version} clang-tools-${llvm_version} llvm-${llvm_version}-dev lld-${llvm_version} lldb-${llvm_version} \
-        llvm-${llvm_version}-tools libomp-${llvm_version}-dev libc++-${llvm_version}-dev libc++abi-${llvm_version}-dev \
-        libclang-common-${llvm_version}-dev libclang-${llvm_version}-dev libclang-dev libunwind-${llvm_version}-dev \
-        "
-        # Install llvm
-        apt-get -qq install -y ${llvm_pkg}
+        # Install LLVM
+        echo -e "${INFO} Start installing the LLVM toolchain..."
+        sudo apt-get -qq install -y lsb-release software-properties-common gnupg
+        curl -fsSL https://apt.llvm.org/llvm.sh | sudo bash -s all
+        [[ "${?}" -eq "0" ]] || error_msg "LLVM installation failed."
 
         # Set cross compilation parameters
         export CROSS_COMPILE="aarch64-linux-gnu-"
@@ -222,7 +222,7 @@ toolchain_check() {
         if [[ ! -d "${toolchain_path}/${gun_file//.tar.xz/}/bin" ]]; then
             echo -e "${INFO} Start downloading the ARM GNU toolchain [ ${gun_file} ]..."
             wget -q "${dev_repo}/${gun_file}" -O "${toolchain_path}/${gun_file}"
-            [[ "${?}" -eq "0" ]] || error_msg "GNU toolchain file download failed"
+            [[ "${?}" -eq "0" ]] || error_msg "GNU toolchain file download failed."
             tar -xJf ${toolchain_path}/${gun_file} -C ${toolchain_path}
             rm -f ${toolchain_path}/${gun_file}
             [[ -d "${toolchain_path}/${gun_file//.tar.xz/}/bin" ]] || error_msg "The gcc is not set!"
@@ -255,28 +255,17 @@ query_version() {
         # Identify the kernel mainline
         MAIN_LINE="$(echo ${KERNEL_VAR} | awk -F '.' '{print $1"."$2}')"
 
-        if [[ "${code_owner}" == "kernel.org" ]]; then
-            # latest_version="5.10.125"
-            latest_version="$(curl -s ${kernel_org_repo} | grep -oE linux-${MAIN_LINE}.[0-9]+.tar.xz | sort -rV | head -n 1 | grep -oE '[1-9].[0-9]{1,3}.[0-9]+')"
-            if [[ "${?}" -eq "0" && -n "${latest_version}" ]]; then
-                tmp_arr_kernels[${i}]="${latest_version}"
-            else
-                error_msg "Failed to query the kernel version in [ ${kernel_org_repo} ]"
-            fi
-            echo -e "${INFO} (${i}) [ ${tmp_arr_kernels[$i]} ] is kernel.org latest kernel. \n"
+        if [[ -z "${code_repo}" ]]; then linux_repo="linux-${MAIN_LINE}.y"; else linux_repo="${code_repo}"; fi
+        github_kernel_repo="${code_owner}/${linux_repo}/${code_branch}"
+        github_kernel_ver="https://raw.githubusercontent.com/${github_kernel_repo}/Makefile"
+        # latest_version="125"
+        latest_version="$(curl -s ${github_kernel_ver} | grep -oE "SUBLEVEL =.*" | head -n 1 | grep -oE '[0-9]{1,3}')"
+        if [[ "${?}" -eq "0" && -n "${latest_version}" ]]; then
+            tmp_arr_kernels[${i}]="${MAIN_LINE}.${latest_version}"
         else
-            if [[ -z "${code_repo}" ]]; then linux_repo="linux-${MAIN_LINE}.y"; else linux_repo="${code_repo}"; fi
-            github_kernel_repo="${code_owner}/${linux_repo}/${code_branch}"
-            github_kernel_ver="https://raw.githubusercontent.com/${github_kernel_repo}/Makefile"
-            # latest_version="125"
-            latest_version="$(curl -s ${github_kernel_ver} | grep -oE "SUBLEVEL =.*" | head -n 1 | grep -oE '[0-9]{1,3}')"
-            if [[ "${?}" -eq "0" && -n "${latest_version}" ]]; then
-                tmp_arr_kernels[${i}]="${MAIN_LINE}.${latest_version}"
-            else
-                error_msg "Failed to query the kernel version in [ github.com/${github_kernel_repo} ]"
-            fi
-            echo -e "${INFO} (${i}) [ ${tmp_arr_kernels[$i]} ] is github.com/${github_kernel_repo} latest kernel. \n"
+            error_msg "Failed to query the kernel version in [ github.com/${github_kernel_repo} ]"
         fi
+        echo -e "${INFO} (${i}) [ ${tmp_arr_kernels[$i]} ] is github.com/${github_kernel_repo} latest kernel. \n"
 
         let i++
     done
@@ -286,37 +275,52 @@ query_version() {
     build_kernel="${tmp_arr_kernels[*]}"
 }
 
+apply_patch() {
+    cd ${current_path}
+    echo -e "${STEPS} Start applying custom kernel patches..."
+
+    # Apply the common kernel patches
+    if [[ -d "${kernel_patch_path}/common-kernel-patches" ]]; then
+        echo -e "${INFO} Copy common kernel patches..."
+        cp -vf ${kernel_patch_path}/common-kernel-patches/*.patch -t ${kernel_path}/${local_kernel_path}
+
+        cd ${kernel_path}/${local_kernel_path}
+        for file in *.patch; do
+            echo -e "${INFO} Apply kernel patch file: [ ${file} ]"
+            patch -p1 <"${file}"
+        done
+        rm -f *.patch
+    else
+        echo -e "${INFO} No common kernel patches, skipping."
+    fi
+
+    # Apply the dedicated kernel patches
+    if [[ -d "${kernel_patch_path}/${local_kernel_path}" ]]; then
+        echo -e "${INFO} Copy [ ${local_kernel_path} ] version dedicated kernel patches..."
+        cp -vf ${kernel_patch_path}/${local_kernel_path}/*.patch -t ${kernel_path}/${local_kernel_path}
+
+        cd ${kernel_path}/${local_kernel_path}
+        for file in *.patch; do
+            echo -e "${INFO} Apply kernel patch file: [ ${file} ]"
+            patch -p1 <"${file}"
+        done
+        rm -f *.patch
+    else
+        echo -e "${INFO} No [ ${local_kernel_path} ] version dedicated kernel patches, skipping."
+    fi
+}
+
 get_kernel_source() {
     cd ${current_path}
     echo -e "${STEPS} Start downloading the kernel source code..."
 
-    # kernel_folder > kernel_.tar.xz_file > download_from_kernel.org
     [[ -d "${kernel_path}" ]] || mkdir -p ${kernel_path}
+
     if [[ ! -d "${kernel_path}/${local_kernel_path}" ]]; then
-        if [[ "${code_owner}" == "kernel.org" ]]; then
-            if [[ -f "${kernel_path}/${local_kernel_path}.tar.xz" ]]; then
-                echo -e "${INFO} Unzip local files [ ${local_kernel_path}.tar.xz ]"
-                cd ${kernel_path}
-                tar -xJf ${local_kernel_path}.tar.xz
-                [[ "${?}" -eq "0" ]] || error_msg "[ ${local_kernel_path}.tar.xz ] file decompression failed."
-            else
-                echo -e "${INFO} [ ${kernel_version} ] Kernel loading from [ ${server_kernel_repo}${local_kernel_path}.tar.xz ]"
-                wget -q -P ${kernel_path} ${server_kernel_repo}${local_kernel_path}.tar.xz
-                if [[ "${?}" -eq "0" && -s "${kernel_path}/${local_kernel_path}.tar.xz" ]]; then
-                    echo -e "${SUCCESS} The kernel file is downloaded successfully."
-                    cd ${kernel_path}
-                    tar -xJf ${local_kernel_path}.tar.xz
-                    [[ -d "${local_kernel_path}" ]] || error_msg "[ ${local_kernel_path}.tar.xz ] file decompression failed."
-                else
-                    error_msg "Kernel file download failed!"
-                fi
-            fi
-        else
-            echo -e "${INFO} Start cloning from [ https://github.com/${server_kernel_repo} -b ${code_branch} ]"
-            git clone -q --single-branch --depth 1 https://github.com/${server_kernel_repo} -b ${code_branch} ${kernel_path}/${local_kernel_path}
-            [[ "${?}" -eq "0" ]] || error_msg "[ https://github.com/${server_kernel_repo} ] Clone failed."
-        fi
-    elif [[ "${code_owner}" != "kernel.org" ]]; then
+        echo -e "${INFO} Start cloning from [ https://github.com/${server_kernel_repo} -b ${code_branch} ]"
+        git clone -q --single-branch --depth=1 --branch=${code_branch} https://github.com/${server_kernel_repo} ${kernel_path}/${local_kernel_path}
+        [[ "${?}" -eq "0" ]] || error_msg "[ https://github.com/${server_kernel_repo} ] Clone failed."
+    else
         # Get a local kernel version
         local_makefile="${kernel_path}/${local_kernel_path}/Makefile"
         local_makefile_version="$(cat ${local_makefile} | grep -oE "VERSION =.*" | head -n 1 | grep -oE '[0-9]{1,3}')"
@@ -324,7 +328,7 @@ get_kernel_source() {
         local_makefile_sublevel="$(cat ${local_makefile} | grep -oE "SUBLEVEL =.*" | head -n 1 | grep -oE '[0-9]{1,3}')"
 
         # Local version and server version comparison
-        if [[ "${auto_kernel}" == "true" && "${kernel_sub}" -gt "${local_makefile_sublevel}" ]]; then
+        if [[ "${auto_kernel}" == "true" || "${auto_kernel}" == "yes" ]] && [[ "${kernel_sub}" -gt "${local_makefile_sublevel}" ]]; then
             # Pull the latest source code of the server
             cd ${kernel_path}/${local_kernel_path}
             git checkout ${code_branch} && git reset --hard origin/${code_branch} && git pull
@@ -338,6 +342,12 @@ get_kernel_source() {
             echo -e "${INFO} Use local source code, compile the kernel version [ ${kernel_version} ]."
         fi
     fi
+
+    # Remove the local version number
+    rm -f ${kernel_path}/${local_kernel_path}/localversion
+
+    # Apply custom kernel patches
+    [[ "${auto_patch}" == "true" || "${auto_patch}" == "yes" ]] && apply_patch
 }
 
 headers_install() {
@@ -467,25 +477,26 @@ generate_uinitrd() {
     echo -e "${STEPS} Generate uInitrd environment initialization..."
 
     # Backup current system files for /boot
-    echo -e "${INFO} Backup the files in the [ /boot ] directory."
-    boot_backup_path="/boot/backup"
+    echo -e "${INFO} Backup the files in the [ ${boot_backup_path} ] directory."
     rm -rf ${boot_backup_path} && mkdir -p ${boot_backup_path}
-    mv -f /boot/{config-*,initrd.img-*,System.map-*,uInitrd-*,vmlinuz-*,uInitrd,zImage,Image} ${boot_backup_path} 2>/dev/null
+    mv -f /boot/{config-*,initrd.img-*,System.map-*,vmlinuz-*,uInitrd*,*Image} -t ${boot_backup_path}
     # Copy /boot related files into armbian system
     cp -f ${kernel_path}/${local_kernel_path}/System.map /boot/System.map-${kernel_outname}
     cp -f ${kernel_path}/${local_kernel_path}/.config /boot/config-${kernel_outname}
     cp -f ${kernel_path}/${local_kernel_path}/arch/arm64/boot/Image /boot/vmlinuz-${kernel_outname}
-    [[ "${PLATFORM}" == "amlogic" ]] && cp -f /boot/vmlinuz-${kernel_outname} /boot/zImage
-    [[ "${PLATFORM}" == "rockchip" ]] && ln -sf vmlinuz-${kernel_outname} /boot/Image
+    if [[ "${PLATFORM}" == "rockchip" || "${PLATFORM}" == "allwinner" ]]; then
+        cp -f /boot/vmlinuz-${kernel_outname} /boot/Image
+    else
+        cp -f /boot/vmlinuz-${kernel_outname} /boot/zImage
+    fi
     #echo -e "${INFO} Kernel copy results in the [ /boot ] directory: \n$(ls -l /boot) \n"
 
     # Backup current system files for /usr/lib/modules
-    echo -e "${INFO} Backup the files in the [ /usr/lib/modules ] directory."
-    modules_backup_path="/usr/lib/modules/backup"
+    echo -e "${INFO} Backup the files in the [ ${modules_backup_path} ] directory."
     rm -rf ${modules_backup_path} && mkdir -p ${modules_backup_path}
-    mv -f /usr/lib/modules/$(uname -r) ${modules_backup_path}
+    mv -f /usr/lib/modules/$(uname -r) -t ${modules_backup_path}
     # Copy modules files
-    cp -rf ${out_kernel}/modules/lib/modules/${kernel_outname} /usr/lib/modules
+    cp -rf ${out_kernel}/modules/lib/modules/${kernel_outname} -t /usr/lib/modules
     #echo -e "${INFO} Kernel copy results in the [ /usr/lib/modules ] directory: \n$(ls -l /usr/lib/modules) \n"
 
     # COMPRESS: [ gzip | bzip2 | lz4 | lzma | lzop | xz | zstd ]
@@ -496,12 +507,18 @@ generate_uinitrd() {
     cd /boot
     echo -e "${STEPS} Generate uInitrd file..."
 
-    # Generate uInitrd file directly under armbian system
-    update-initramfs -c -k ${kernel_outname} 2>/dev/null
+    # Enable update_initramfs
+    [[ -f "${initramfs_conf}" ]] && sed -i "s|^update_initramfs=.*|update_initramfs=yes|g" ${initramfs_conf}
 
-    if [[ -f uInitrd ]]; then
+    # Generate uInitrd file directly under armbian system
+    update-initramfs -c -k ${kernel_outname}
+
+    # Disable update_initramfs
+    [[ -f "${initramfs_conf}" ]] && sed -i "s|^update_initramfs=.*|update_initramfs=no|g" ${initramfs_conf}
+
+    if [[ -f "uInitrd" ]]; then
         echo -e "${SUCCESS} The initrd.img and uInitrd file is Successfully generated."
-        mv -f uInitrd uInitrd-${kernel_outname} 2>/dev/null
+        [[ ! -L "uInitrd" ]] && mv -vf uInitrd uInitrd-${kernel_outname}
     else
         echo -e "${WARNING} The initrd.img and uInitrd file not updated."
     fi
@@ -510,11 +527,15 @@ generate_uinitrd() {
 
     # Restore the files in the [ /boot ] directory
     mv -f *${kernel_outname} ${out_kernel}/boot
-    mv -f ${boot_backup_path}/* . && rm -rf ${boot_backup_path}
+    mv -f ${boot_backup_path}/* -t .
 
     # Restore the files in the [ /usr/lib/modules ] directory
     rm -rf /usr/lib/modules/${kernel_outname}
-    mv -f ${modules_backup_path}/* /usr/lib/modules && rm -rf ${modules_backup_path}
+    mv -f ${modules_backup_path}/* -t /usr/lib/modules
+
+    # Remove temporary backup directory
+    sync && sleep 3
+    rm -rf ${boot_backup_path} ${modules_backup_path}
 }
 
 packit_dtbs() {
@@ -522,22 +543,40 @@ packit_dtbs() {
     echo -e "${STEPS} Packing the [ ${kernel_outname} ] dtbs packages..."
 
     cd ${out_kernel}/dtb/allwinner
-    cp -f ${kernel_path}/${local_kernel_path}/arch/arm64/boot/dts/allwinner/*.dtb . && chmod +x *
-    tar -czf dtb-allwinner-${kernel_outname}.tar.gz *
-    mv -f *.tar.gz ${out_kernel}/${kernel_version}
-    echo -e "${SUCCESS} The [ dtb-allwinner-${kernel_outname}.tar.gz ] file is packaged."
+    cp -f ${kernel_path}/${local_kernel_path}/arch/arm64/boot/dts/allwinner/*.dtb . 2>/dev/null
+    [[ "${?}" -eq "0" ]] && {
+        [[ -d "${kernel_path}/${local_kernel_path}/arch/arm64/boot/dts/allwinner/overlay" ]] && {
+            mkdir -p overlay
+            cp -f ${kernel_path}/${local_kernel_path}/arch/arm64/boot/dts/allwinner/overlay/*.dtbo overlay/ 2>/dev/null
+        }
+        tar -czf dtb-allwinner-${kernel_outname}.tar.gz *
+        mv -f *.tar.gz ${out_kernel}/${kernel_version}
+        echo -e "${SUCCESS} The [ dtb-allwinner-${kernel_outname}.tar.gz ] file is packaged."
+    }
 
     cd ${out_kernel}/dtb/amlogic
-    cp -f ${kernel_path}/${local_kernel_path}/arch/arm64/boot/dts/amlogic/*.dtb . && chmod +x *
-    tar -czf dtb-amlogic-${kernel_outname}.tar.gz *
-    mv -f *.tar.gz ${out_kernel}/${kernel_version}
-    echo -e "${SUCCESS} The [ dtb-amlogic-${kernel_outname}.tar.gz ] file is packaged."
+    cp -f ${kernel_path}/${local_kernel_path}/arch/arm64/boot/dts/amlogic/*.dtb . 2>/dev/null
+    [[ "${?}" -eq "0" ]] && {
+        [[ -d "${kernel_path}/${local_kernel_path}/arch/arm64/boot/dts/amlogic/overlay" ]] && {
+            mkdir -p overlay
+            cp -f ${kernel_path}/${local_kernel_path}/arch/arm64/boot/dts/amlogic/overlay/*.dtbo overlay/ 2>/dev/null
+        }
+        tar -czf dtb-amlogic-${kernel_outname}.tar.gz *
+        mv -f *.tar.gz ${out_kernel}/${kernel_version}
+        echo -e "${SUCCESS} The [ dtb-amlogic-${kernel_outname}.tar.gz ] file is packaged."
+    }
 
     cd ${out_kernel}/dtb/rockchip
-    cp -f ${kernel_path}/${local_kernel_path}/arch/arm64/boot/dts/rockchip/*.dtb . && chmod +x *
-    tar -czf dtb-rockchip-${kernel_outname}.tar.gz *
-    mv -f *.tar.gz ${out_kernel}/${kernel_version}
-    echo -e "${SUCCESS} The [ dtb-rockchip-${kernel_outname}.tar.gz ] file is packaged."
+    cp -f ${kernel_path}/${local_kernel_path}/arch/arm64/boot/dts/rockchip/*.dtb . 2>/dev/null
+    [[ "${?}" -eq "0" ]] && {
+        [[ -d "${kernel_path}/${local_kernel_path}/arch/arm64/boot/dts/rockchip/overlay" ]] && {
+            mkdir -p overlay
+            cp -f ${kernel_path}/${local_kernel_path}/arch/arm64/boot/dts/rockchip/overlay/*.dtbo overlay/ 2>/dev/null
+        }
+        tar -czf dtb-rockchip-${kernel_outname}.tar.gz *
+        mv -f *.tar.gz ${out_kernel}/${kernel_version}
+        echo -e "${SUCCESS} The [ dtb-rockchip-${kernel_outname}.tar.gz ] file is packaged."
+    }
 }
 
 packit_kernel() {
@@ -579,7 +618,7 @@ compile_selection() {
     echo -e "${SUCCESS} The [ sha256sums ] file has been generated"
 
     cd ${out_kernel}
-    tar -czf ${kernel_version}.tar.gz ${kernel_version} && sync && sleep 3
+    tar -czf ${kernel_version}.tar.gz ${kernel_version}
 
     echo -e "${INFO} Kernel series files are stored in [ ${out_kernel} ]."
 }
@@ -588,7 +627,9 @@ clean_tmp() {
     cd ${current_path}
     echo -e "${STEPS} Clear the space..."
 
+    sync && sleep 3
     rm -rf ${out_kernel}/{boot/,dtb/,modules/,header/,${kernel_version}/}
+    rm -rf ${tmp_backup_path}
 
     echo -e "${SUCCESS} All processes have been completed."
 }
@@ -598,18 +639,15 @@ loop_recompile() {
 
     j="1"
     for k in ${build_kernel[*]}; do
-        # kernel_version, such as [ 5.10.125 ]
+        # kernel_version, such as [ 6.1.15 ]
         kernel_version="${k}"
-        # kernel <VERSION> and <PATCHLEVEL>, such as [ 5.10 ]
+        # kernel <VERSION> and <PATCHLEVEL>, such as [ 6.1 ]
         kernel_verpatch="$(echo ${kernel_version} | awk -F '.' '{print $1"."$2}')"
-        # kernel <SUBLEVEL>, such as [ 125 ]
+        # kernel <SUBLEVEL>, such as [ 15 ]
         kernel_sub="$(echo ${kernel_version} | awk -F '.' '{print $3}')"
 
         # The loop variable assignment
-        if [[ "${code_owner}" == "kernel.org" ]]; then
-            server_kernel_repo="${kernel_org_repo}"
-            local_kernel_path="linux-${kernel_version}"
-        elif [[ -z "${code_repo}" ]]; then
+        if [[ -z "${code_repo}" ]]; then
             server_kernel_repo="${code_owner}/linux-${kernel_verpatch}.y"
             local_kernel_path="linux-${kernel_verpatch}.y"
         else
@@ -639,15 +677,18 @@ init_var "${@}"
 # Check and install the toolchain
 toolchain_check
 # Query the latest kernel version
-[[ "${auto_kernel}" == "true" ]] && query_version
+[[ "${auto_kernel}" == "true" || "${auto_kernel}" == "yes" ]] && query_version
 
 # Show compile settings
 echo -e "${INFO} Kernel compilation toolchain: [ ${toolchain_name} ]"
 echo -e "${INFO} Kernel from: [ ${code_owner} ]"
+echo -e "${INFO} Kernel patch: [ ${auto_patch} ]"
+echo -e "${INFO} Kernel Package: [ ${package_list} ]"
+echo -e "${INFO} kernel signature: [ ${custom_name} ]"
+echo -e "${INFO} Latest kernel version: [ ${auto_kernel} ]"
 echo -e "${INFO} Kernel List: [ $(echo ${build_kernel[*]} | xargs) ] \n"
+
 # Show server start information
-echo -e "${INFO} Server CPU configuration information: \n$(cat /proc/cpuinfo | grep name | cut -f2 -d: | uniq -c) \n"
-echo -e "${INFO} Server memory usage: \n$(free -h) \n"
 echo -e "${INFO} Server space usage before starting to compile: \n$(df -hT ${current_path}) \n"
 
 # Loop to compile the kernel

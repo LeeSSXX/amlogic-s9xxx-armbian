@@ -43,12 +43,15 @@ docker_pgid="1000"
 docker_tz="Asia/Shanghai"
 #
 # Get current network status
+my_network_card="$(cat /proc/net/dev 2>/dev/null | awk '{i++; if(i>2){print $1}}' | sed 's/^[\t]*//g' | sed 's/[:]*$//g' | grep -E 'e' | head -n 1)"
 my_ifconfig="$(ifconfig -a 2>/dev/null | grep inet | grep -v 'inet6.*' | grep -v 'inet 172.*' | grep -v 'inet 127.*' | head -n1)"
 my_address="$(echo ${my_ifconfig} | awk '{print $2}')"
 my_netmask="$(echo ${my_ifconfig} | awk '{print $4}')"
 my_broadcast="$(echo ${my_ifconfig} | awk '{print $6}')"
 my_gateway="$(route -n 2>/dev/null | awk '($2~/^1/){print $2}' | head -n1)"
 my_macvlan="$(docker network ls 2>/dev/null | grep macvlan | awk '($2 == "macnet" && $3 == "macvlan"){print $2,$3}' | head -n1)"
+my_mac="$(ip a | grep ether | cut -d ' ' -f 6 | head -n 1)"
+my_hostname="$(hostname)"
 #
 # Set font color
 STEPS="[\033[95m STEPS \033[0m]"
@@ -100,7 +103,6 @@ software_update() {
     sudo apt-get autoclean -y
 
     echo -e "${SUCCESS} Package updated successfully."
-    exit 0
 }
 
 software_remove() {
@@ -136,6 +138,8 @@ docker_image_remove() {
     # Query the image ID based on the image name and delete it
     echo -e "${STEPS} Start removing image: [ ${image_name} ]..."
     docker image rm -f $(docker images -q --filter reference=${image_name})
+    # Automatic deletion of unused docker images
+    docker image prune -f >/dev/null
     echo -e "${SUCCESS} ${image_name} removed successfully."
 }
 
@@ -150,6 +154,8 @@ docker_update() {
     docker_container_remove "${container_name}"
     # Start a new one
     sudo bash ${command_docker} -s ${software_id} -m install
+    # Automatic deletion of unused docker images
+    docker image prune -f >/dev/null
 }
 
 # Remove docker
@@ -161,8 +167,12 @@ docker_remove() {
     docker_container_remove "${container_name}"
     # Delete old image
     docker_image_remove "${image_name}"
+
     # Delete the installation directory
-    [[ -d "${install_path}" ]] && rm -rf ${install_path} 2>/dev/null
+    echo -ne "${OPTIONS} Delete [ ${install_path} ] directory? (y/n): "
+    read del_dir
+    [[ "${del_dir,,}" == "y" ]] && [[ -d "${install_path}" ]] && rm -rf ${install_path} 2>/dev/null
+
     exit 0
 }
 

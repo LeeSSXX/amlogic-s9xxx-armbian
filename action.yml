@@ -15,33 +15,33 @@ inputs:
   armbian_board:
     description: "Set device Board."
     required: false
-    default: "s905d_s905x3"
+    default: "all"
+  kernel_repo:
+    description: "Set kernel repository."
+    required: false
+    default: "ophub/kernel"
+  kernel_usage:
+    description: "Set the tags of the stable kernel."
+    required: false
+    default: "stable"
   armbian_kernel:
     description: "Set kernel version."
     required: false
-    default: "5.10.125_5.15.50"
-  version_branch:
-    description: "Set kernel branch."
-    required: false
-    default: "stable"
+    default: "6.1.1_5.15.1"
   auto_kernel:
     description: "Auto use the latest kernel."
     required: false
     default: "true"
-  kernel_repo:
-    description: "Set kernel repository."
-    required: false
-    default: "https://github.com/ophub/kernel/tree/main/pub"
-  armbian_size:
-    description: "Set armbian rootfs size(Unit: MiB)."
-    required: false
-    default: "2560"
   armbian_fstype:
     description: "Set armbian rootfs type: ext4 / btrfs"
     required: false
     default: "ext4"
-  armbian_sign:
-    description: "Set armbian custom name."
+  armbian_size:
+    description: "Set armbian rootfs size(Unit: MiB)."
+    required: false
+    default: "2560"
+  builder_name:
+    description: "Set Armbian builder signature."
     required: false
     default: ""
   gh_token:
@@ -56,7 +56,7 @@ inputs:
   kernel_version:
     description: "Select kernel version"
     required: false
-    default: "5.10.125_5.15.50"
+    default: "6.1.1_5.15.1"
   kernel_auto:
     description: "Auto use the latest kernel"
     required: false
@@ -65,18 +65,26 @@ inputs:
     description: "Select compile package list"
     required: false
     default: "all"
-  kernel_toolchain:
-    description: "Select the compilation toolchain"
-    required: false
-    default: "clang"
   kernel_sign:
     description: "Set the kernel custom signature"
     required: false
     default: "-ophub"
+  kernel_toolchain:
+    description: "Select the compilation toolchain"
+    required: false
+    default: "clang"
   kernel_config:
     description: "Set the path of kernel .config"
     required: false
-    default: ""
+    default: "false"
+  kernel_patch:
+    description: "Set the directory for kernel patches"
+    required: false
+    default: "false"
+  auto_patch:
+    description: "Set whether to use kernel patches"
+    required: false
+    default: "false"
 
 runs:
   using: "composite"
@@ -117,22 +125,41 @@ runs:
             [[ "${down_file:0-4}" == ".zip" ]] && unzip -o ${down_file} 2>/dev/null && sync
             echo -e "Armbian file: \n$(ls -l *.img 2>/dev/null)"
 
+            cd ${GITHUB_ACTION_PATH}/${armbian_filepath}
+            echo -e "Check the armbian file name (-trunk_)..."
+            image_file="$(basename $(ls *.img 2>/dev/null | head -n 1))"
+            if [[ "${image_file}" =~ "-trunk_" ]]; then
+                echo -e "The armbian file name is correct."
+            else
+                echo -e "The armbian file name is incorrect, renaming..."
+                image_version="$(echo ${image_file} | grep -oE '[2-9][0-9]\.[0-9]{1,2}\.[0-9]{1,2}' | head -n 1)"
+                image_kernel="$(echo ${image_file} | grep -oE '[5-9]\.[0-9]{1,2}\.[0-9]{1,3}' | head -n 1)"
+                image_save_name="Armbian_${image_version}-trunk_${image_kernel}.img"
+                rm -f ${image_save_name}
+                mv -f ${image_file} ${image_save_name}
+                echo -e "Armbian file: \n$(ls -l *.img 2>/dev/null)"
+            fi
+
             cd ${GITHUB_ACTION_PATH}
             echo -e "Start to rebuild armbian..."
             make_command=""
             [[ -n "${{ inputs.armbian_board }}" ]] && make_command="${make_command} -b ${{ inputs.armbian_board }}"
+            [[ -n "${{ inputs.kernel_repo }}" ]] && make_command="${make_command} -r ${{ inputs.kernel_repo }}"
+            [[ -n "${{ inputs.kernel_usage }}" ]] && make_command="${make_command} -u ${{ inputs.kernel_usage }}"
             [[ -n "${{ inputs.armbian_kernel }}" ]] && make_command="${make_command} -k ${{ inputs.armbian_kernel }}"
             [[ -n "${{ inputs.auto_kernel }}" ]] && make_command="${make_command} -a ${{ inputs.auto_kernel }}"
-            [[ -n "${{ inputs.version_branch }}" ]] && make_command="${make_command} -v ${{ inputs.version_branch }}"
-            [[ -n "${{ inputs.kernel_repo }}" ]] && make_command="${make_command} -r ${{ inputs.kernel_repo }}"
-            [[ -n "${{ inputs.armbian_size }}" ]] && make_command="${make_command} -s ${{ inputs.armbian_size }}"
             [[ -n "${{ inputs.armbian_fstype }}" ]] && make_command="${make_command} -t ${{ inputs.armbian_fstype }}"
-            [[ -n "${{ inputs.armbian_sign }}" ]] && make_command="${make_command} -n ${{ inputs.armbian_sign }}"
+            [[ -n "${{ inputs.armbian_size }}" ]] && make_command="${make_command} -s ${{ inputs.armbian_size }}"
+            [[ -n "${{ inputs.builder_name }}" ]] && make_command="${make_command} -n ${{ inputs.builder_name }}"
             [[ -n "${{ inputs.gh_token }}" ]] && make_command="${make_command} -g ${{ inputs.gh_token }}"
             sudo ./rebuild ${make_command}
 
             cd ${GITHUB_ACTION_PATH}/${armbian_filepath}
-            gzip *.img && sync
+            # Compress Armbian image file
+            pigz -qf *.img || gzip -qf *.img
+            # Generate a sha256sum verification file for each Armbian image file
+            for file in *; do [[ ! -d "${file}" ]] && sha256sum "${file}" >"${file}.sha"; done
+            sync && sleep 3
 
             cd ${GITHUB_ACTION_PATH}
             echo -e "Output environment variables."
@@ -151,9 +178,10 @@ runs:
 
             config_filepath="compile-kernel/tools/config"
             kernel_outpath="compile-kernel/output"
-            if [[ -n "${{ inputs.kernel_config }}" ]]; then
+            [[ -d "${config_filepath}" ]] || mkdir -p ${config_filepath}
+            if [[ -n "${{ inputs.kernel_config }}" && "${{ inputs.kernel_config }}" != "false" ]]; then
                 if [[ "$(ls ${GITHUB_WORKSPACE}/${{ inputs.kernel_config }}/config-* -l 2>/dev/null | grep "^-" | wc -l)" -ne "0" ]]; then
-                    echo -e "Use a custom kernel compilation template."
+                    echo -e "Use a custom kernel compilation template..."
                     rm -f ${config_filepath}/* 2>/dev/null && sync
                     cp -vf ${GITHUB_WORKSPACE}/${{ inputs.kernel_config }}/config-* ${config_filepath}/ 2>/dev/null && sync
                     echo -e "List of Kernel Custom Compilation Configuration Templates: \n$(ls -l ${config_filepath})"
@@ -164,17 +192,33 @@ runs:
                 echo -e "Use the default kernel compilation template."
             fi
 
+            custom_kernel_patch="compile-kernel/tools/patch"
+            [[ -d "${custom_kernel_patch}" ]] || mkdir -p ${custom_kernel_patch}
+            if [[ -n "${{ inputs.kernel_patch }}" && "${{ inputs.kernel_patch }}" != "false" ]]; then
+                if [[ -d "${GITHUB_WORKSPACE}/${{ inputs.kernel_patch }}" ]]; then
+                    echo -e "Use custom kernel patches..."
+                    rm -rf ${custom_kernel_patch}/* 2>/dev/null && sync
+                    cp -vrf ${GITHUB_WORKSPACE}/${{ inputs.kernel_patch }}/* -t ${custom_kernel_patch} && sync
+                    echo -e "Directory of custom kernel patches: \n$(ls -l ${custom_kernel_patch})"
+                else
+                    echo -e "Invalid custom kernel patch directory, skipping."
+                fi
+            else
+                echo -e "No custom kernel patches available."
+            fi
+
             make_command=""
             [[ -n "${{ inputs.kernel_source }}" ]] && make_command="${make_command} -r ${{ inputs.kernel_source }}"
             [[ -n "${{ inputs.kernel_version }}" ]] && make_command="${make_command} -k ${{ inputs.kernel_version }}"
             [[ -n "${{ inputs.kernel_auto }}" ]] && make_command="${make_command} -a ${{ inputs.kernel_auto }}"
-            [[ -n "${{ inputs.kernel_package }}" ]] && make_command="${make_command} -p ${{ inputs.kernel_package }}"
-            [[ -n "${{ inputs.kernel_toolchain }}" ]] && make_command="${make_command} -t ${{ inputs.kernel_toolchain }}"
+            [[ -n "${{ inputs.kernel_package }}" ]] && make_command="${make_command} -m ${{ inputs.kernel_package }}"
+            [[ -n "${{ inputs.auto_patch }}" ]] && make_command="${make_command} -p ${{ inputs.auto_patch }}"
             [[ -n "${{ inputs.kernel_sign }}" ]] && make_command="${make_command} -n ${{ inputs.kernel_sign }}"
+            [[ -n "${{ inputs.kernel_toolchain }}" ]] && make_command="${make_command} -t ${{ inputs.kernel_toolchain }}"
             sudo ./recompile ${make_command}
 
             cd ${GITHUB_ACTION_PATH}
-            output_tags="$(ls -l ${PWD}/${kernel_outpath}/*.tar.gz | awk '{print $9}' | grep -oE '[1-9].[0-9]{1,3}.[0-9]+' | xargs | tr "[ ]" "_")"
+            output_tags="$(ls -l ${PWD}/${kernel_outpath}/*.tar.gz | awk '{print $9}' | grep -oE '[1-9][0-9]{0,2}\.[0-9]{1,3}\.[0-9]+' | xargs | tr "[ ]" "_")"
             echo -e "Output environment variables."
             echo "PACKAGED_OUTPUTTAGS=${output_tags}" >> ${GITHUB_ENV}
             echo "PACKAGED_OUTPUTPATH=${PWD}/${kernel_outpath}" >> ${GITHUB_ENV}

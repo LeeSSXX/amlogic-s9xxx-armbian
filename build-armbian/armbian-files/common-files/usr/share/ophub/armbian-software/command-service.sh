@@ -24,6 +24,8 @@
 # software_305  : For plex
 # software_306  : For emby-server
 # software_307  : For kvm
+# software_308  : For pve
+# software_309  : For casaos
 #
 #============================================================================
 
@@ -60,7 +62,7 @@ software_303() {
         sudo nps start
 
         sync && sleep 3
-        echo -e "${NOTE} The NPS address: [ http://ip:8080 ]"
+        echo -e "${NOTE} The NPS address: [ http://${my_address}:8080 ]"
         echo -e "${NOTE} The NPS account: [ username:admin  /  password:123 ]"
         echo -e "${NOTE} The NPS Instructions for Use: [ https://ehang-io.github.io/nps ]"
         echo -e "${SUCCESS} The NPS installation is successful."
@@ -161,9 +163,9 @@ software_305() {
         echo -e "${STEPS} Confirm the service is enabled..."
         systemctl is-enabled plexmediaserver.service
 
-        # Configure Plex Media Server: http://ip:32400/web
+        # Configure Plex Media Server
         sync && sleep 3
-        echo -e "${NOTE} The Plex Media Server address: [ http://ip:32400/web ]"
+        echo -e "${NOTE} The Plex Media Server address: [ http://${my_address}:32400/web ]"
         echo -e "${SUCCESS} The Plex Media Server installation is successful."
         ;;
     update) software_update ;;
@@ -207,9 +209,9 @@ software_306() {
         echo -e "${STEPS} Confirm the service is enabled..."
         systemctl is-enabled emby-server.service
 
-        # Configure Emby Server: http://ip:8096
+        # Configure Emby Server
         sync && sleep 3
-        echo -e "${NOTE} The Emby Server address: [ http://ip:8096 ]"
+        echo -e "${NOTE} The Emby Server address: [ http://${my_address}:8096 ]"
         echo -e "${SUCCESS} The Emby Server installation is successful."
         ;;
     update) software_update ;;
@@ -260,7 +262,7 @@ software_307() {
 
         # Add network bridge settings template
         echo -e "${STEPS} Start adding bridged network settings template..."
-        [[ -z "${my_address}" || -z "${my_broadcast}" || -z "${my_netmask}" || -z "${my_gateway}" ]] && {
+        [[ -z "${my_network_card}" || -z "${my_address}" || -z "${my_broadcast}" || -z "${my_netmask}" || -z "${my_gateway}" ]] && {
             echo -ne "${OPTIONS} Please input IP address, the default is [ ${my_address} ]: "
             read get_address
             [[ -n "${get_address}" ]] && my_address="${get_address}"
@@ -279,16 +281,16 @@ software_307() {
         }
         sudo rm -f ${my_network_br0} 2>/dev/null
         sudo cat >${my_network_br0} <<EOF
-# eth0 setup
-allow-hotplug eth0
-iface eth0 inet manual
+# Network card settings
+allow-hotplug ${my_network_card}
+iface ${my_network_card} inet manual
         pre-up ifconfig \$IFACE up
         pre-down ifconfig \$IFACE down
 
-# Bridge setup
+# Bridge settings
 auto br0
 iface br0 inet static
-        bridge_ports eth0
+        bridge_ports ${my_network_card}
         bridge_stp off
         bridge_waitport 0
         bridge_fd 0
@@ -327,6 +329,170 @@ EOF
     remove)
         software_remove "${kvm_package_list}"
         sudo rm -f ${my_network_br0} 2>/dev/null
+        ;;
+    *) error_msg "Invalid input parameter: [ ${@} ]" ;;
+    esac
+}
+
+# For pve, Tutorials for using [ Cooip JM ]
+software_308() {
+    # pve general settings
+    my_interfaces="/etc/network/interfaces"
+    pve_package_list="pve-manager proxmox-ve"
+
+    case "${software_manage}" in
+    install)
+        echo -e "${STEPS} Start installing PVE..."
+
+        # Add PVE software source
+        echo -e "${STEPS} Start adding [ ${VERSION_CODENAME} ] software source..."
+        if [[ "${VERSION_CODENAME}" == "bookworm" ]]; then
+            # Reference documentation: Cooip JM
+            echo "deb https://mirrors.apqa.cn/proxmox/debian/pve ${VERSION_CODENAME} port" >/etc/apt/sources.list.d/pveport.list
+            curl https://mirrors.apqa.cn/proxmox/debian/pveport.gpg -o /etc/apt/trusted.gpg.d/pveport.gpg
+        elif [[ "${VERSION_CODENAME}" == "bullseye" ]]; then
+            # Reference documentation: https://www.zhou.pp.ua/2023/08/08/n1/
+            echo "deb https://raw.githubusercontent.com/pimox/pimox7/master/ dev/" >/etc/apt/sources.list.d/pimox.list
+            curl https://raw.githubusercontent.com/pimox/pimox7/master/KEY.gpg | apt-key add -
+        else
+            error_msg "This version is not supported: [ ${VERSION_CODENAME} ]"
+        fi
+
+        # Declare PATH
+        export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+        # Add network settings
+        echo -e "${STEPS} Start adding network settings..."
+        [[ -z "${my_network_card}" || -z "${my_mac}" || -z "${my_address}" || -z "${my_broadcast}" || -z "${my_netmask}" || -z "${my_gateway}" ]] && {
+            echo -ne "${OPTIONS} Please input IP address, the default is [ ${my_address} ]: "
+            read get_address
+            [[ -n "${get_address}" ]] && my_address="${get_address}"
+
+            echo -ne "${OPTIONS} Please input netmask, the default is [ ${my_netmask} ]: "
+            read get_netmask
+            [[ -n "${get_netmask}" ]] && my_netmask="${get_netmask}"
+
+            echo -ne "${OPTIONS} Please input gateway, the default is [ ${my_gateway} ]: "
+            read get_gateway
+            [[ -n "${get_gateway}" ]] && my_gateway="${get_gateway}"
+        }
+        sudo mv -f ${my_interfaces} ${my_interfaces}.bak 2>/dev/null
+        sudo cat >${my_interfaces} <<EOF
+auto lo
+iface lo inet loopback
+
+iface ${my_network_card} inet manual
+
+auto vmbr0
+iface vmbr0 inet static
+        hwaddress ether ${my_mac}
+        address ${my_address}/24
+        broadcast ${my_broadcast}
+        netmask ${my_netmask}
+        gateway ${my_gateway}
+        bridge-ports ${my_network_card}
+        bridge-stp off
+        bridge-fd 0
+        dns-nameservers ${my_gateway}
+EOF
+
+        # Confirm hostname
+        echo -ne "${OPTIONS} Please input the hostname, the default is [ ${my_hostname} ]: "
+        read get_hostname
+        [[ -n "${get_hostname}" ]] && my_hostname="${get_hostname}"
+        echo -e "${INFO} Set the hostname: [ ${my_hostname} ]"
+        sudo hostnamectl set-hostname ${my_hostname}
+        sudo cat >/etc/hosts <<EOF
+127.0.0.1	localhost
+${my_address}	${my_hostname}
+EOF
+
+        echo -e "${STEPS} Start installing packages..."
+        software_install "${pve_package_list}"
+
+        # Optimizing LXC container logs
+        echo -e "${INFO} Optimizing LXC container logs."
+        rsyslog_conf="/etc/rsyslog.conf"
+        [[ -f "${rsyslog_conf}" ]] && {
+            echo -e "${STEPS} Optimizing LXC container logs..."
+            sed -i s'|^*.*;auth,authpriv|#&|'g ${rsyslog_conf}
+            sed -i s'|^daemon.*|#&|'g ${rsyslog_conf}
+            [[ -f "/var/log/syslog" ]] && echo "" >/var/log/syslog
+            [[ -f "/var/log/daemon.log" ]] && echo "" >/var/log/daemon.log
+            sudo service syslog restart
+        }
+
+        # Disable zram
+        echo -e "${INFO} Disable zram service."
+        sudo systemctl disable armbian-zram-config.service
+        sudo systemctl disable armbian-ramlog.service
+
+        # Remove ceph-dkms package error
+        echo -e "${INFO} Remove ceph-dkms package error."
+        sudo rm -rf /usr/src/ceph-dkms-0.0.2
+        sudo dpkg --configure -a
+
+        # Install optional packages
+        software_install "ifupdown2"
+        sudo ifup vmbr0 ${my_network_card}
+        software_update
+
+        # Adjust the PVE web interface (Fix the PVE web interface certificate access)
+        echo -e "${INFO} Adjust certificate."
+        sudo rm -f /etc/pve/pve-root-ca.pem /etc/pve/priv/pve-root-ca.* /etc/pve/local/pve-ssl.*
+        sudo pvecm updatecerts -f
+
+        # Add startup service
+        echo -e "${INFO} Add pveproxy as a startup service."
+        sudo systemctl daemon-reload
+        sudo systemctl enable --now pveproxy
+        sudo systemctl restart pveproxy
+
+        # Adjust sshd_config (Fix the SSH certificate access modified by PVE)
+        [[ -L ~/.ssh/authorized_keys ]] && {
+            cp -f $(ls -l ~/.ssh/authorized_keys | awk '{print $NF}') ~/.ssh/authorized_keys_2
+            chmod 600 ~/.ssh/authorized_keys_2
+            sudo sed -i '/AuthorizedKeysFile/d' /etc/ssh/sshd_config
+            sudo echo "AuthorizedKeysFile .ssh/authorized_keys .ssh/authorized_keys_2" >>/etc/ssh/sshd_config
+            sudo /etc/init.d/ssh restart
+        }
+
+        # Fix log issue
+        [[ -f "/var/log/pveproxy/access.log" ]] || {
+            echo -e "${INFO} Fix the missing log issue."
+            sudo mkdir -p /var/log/pveproxy
+            sudo touch /var/log/pveproxy/access.log
+            sudo chown -R www-data:www-data /var/log/pveproxy/
+            sudo chmod -R 755 /var/log/pveproxy/
+            sudo systemctl restart pveproxy
+        }
+
+        sync && sleep 3
+        echo -e "${NOTE} The network address: [ https://${my_address}:8006 ]"
+        echo -e "${NOTE} Username and Password: [  Your system account ]"
+        echo -e "${SUCCESS} PVE installation is successful, please [ reboot ] Armbian."
+        ;;
+    update) software_update ;;
+    remove) software_remove "${pve_package_list}" ;;
+    *) error_msg "Invalid input parameter: [ ${@} ]" ;;
+    esac
+}
+
+# For casaos
+software_309() {
+    case "${software_manage}" in
+    install)
+        echo -e "${STEPS} Start installing CasaOS..."
+        wget -qO- https://get.casaos.io | sudo bash
+
+        sync && sleep 3
+        echo -e "${NOTE} The CasaOS access address: [ http://${my_address}:81 ]"
+        echo -e "${SUCCESS} CasaOS installation successful."
+        ;;
+    update) software_update ;;
+    remove)
+        sudo casaos-uninstall
+        echo -e "${SUCCESS} CasaOS uninstallation successful."
         ;;
     *) error_msg "Invalid input parameter: [ ${@} ]" ;;
     esac

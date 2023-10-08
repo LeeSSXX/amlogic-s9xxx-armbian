@@ -18,6 +18,7 @@
 chroot_make_path="${PWD}"
 chroot_arch_info="$(arch)"
 chroot_kernel_version="${1}"
+initramfs_conf="/etc/initramfs-tools/update-initramfs.conf"
 #
 # Set font color
 STEPS="[\033[95m STEPS \033[0m]"
@@ -43,12 +44,15 @@ chroot_generate_uinitrd() {
     echo -e "${STEPS} Generate uInitrd file..."
     #echo -e "${INFO} File status in the /boot directory before the update: \n$(ls -l .) \n"
 
+    # Enable update_initramfs
+    [[ -f "${initramfs_conf}" ]] && sed -i "s|^update_initramfs=.*|update_initramfs=yes|g" ${initramfs_conf}
+
     # Generate uInitrd file directly under armbian system
-    update-initramfs -c -k ${chroot_kernel_version} 2>/dev/null
+    update-initramfs -c -k ${chroot_kernel_version}
 
     if [[ -f "uInitrd" ]]; then
         echo -e "${SUCCESS} The initrd.img and uInitrd file is Successfully generated."
-        mv -f uInitrd uInitrd-${chroot_kernel_version} 2>/dev/null
+        [[ ! -L "uInitrd" ]] && mv -vf uInitrd uInitrd-${chroot_kernel_version}
         sync && sleep 3
     else
         echo -e "${WARNING} The initrd.img and uInitrd file not updated."
@@ -60,7 +64,7 @@ chroot_generate_uinitrd() {
 echo -e "${INFO} Current system: [ ${chroot_arch_info} ]"
 echo -e "${INFO} Current path: [ ${chroot_make_path} ]"
 echo -e "${INFO} Compile the kernel version: [ ${chroot_kernel_version} ]"
-#
+
 # Check dependencies
 chroot_env_init
 # Generate uInitrd

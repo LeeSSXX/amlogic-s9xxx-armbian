@@ -6,13 +6,9 @@
 
 ## armbian-files
 
-这里存放的文件是构建 Armbian 时需要使用的相关文件。其中 `common-files` 目录下的是通用文件，`platform-files` 目录下是各平台的文件，`different-files` 目录下是针对不同设备的差异化文件。更多说明详见 [documents](documents/README.cn.md) 中的 `12.15` 章节。
+这里存放的文件是构建 Armbian 时需要使用的相关文件。其中 `common-files` 目录下的是通用文件，`platform-files` 目录下是各平台的文件，`different-files` 目录下是针对不同设备的差异化文件。更多说明详见 [documents](../documents/README.cn.md) 中的 `12.15` 章节。
 
 需要的固件将从 [ophub/firmware](https://github.com/ophub/firmware) 仓库自动下载至 `common-files/usr/lib/firmware` 目录。
-
-## documents
-
-这里存放的是 Armbian 使用文档。
 
 ## kernel
 
@@ -20,4 +16,4 @@
 
 ## u-boot
 
-系统启动引导文件，根据不同版本的内核，在需要使用时将由安装/更新等相关脚本自动化完成。
+系统启动引导文件，根据不同版本的内核，在需要使用时将由安装/更新等相关脚本自动化完成。需要的 u-boot 将从 [ophub/u-boot](https://github.com/ophub/u-boot) 仓库自动下载至 `u-boot` 目录。

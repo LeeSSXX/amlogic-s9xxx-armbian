@@ -52,9 +52,9 @@ do_checkemmc() {
     fi
 
     # Find the EMMC drive
-    emmc="$(lsblk -l -o NAME | grep -oE "mmcblk[0-9]boot0" | sort | uniq | sed "s/boot0//g")"
+    emmc="$(lsblk -l -o NAME | grep -oE "mmcblk[0-9]boot0" | sort -u | sed "s/boot0//g")"
     # Find emmc disk, find emmc that does not contain the boot0 partition
-    [[ -z "${emmc}" ]] && emmc="$(lsblk -l -o NAME | grep -oE '(mmcblk[0-9]?)' | grep -vE ^${root_devname} | sort | uniq)"
+    [[ -z "${emmc}" ]] && emmc="$(lsblk -l -o NAME | grep -oE '(mmcblk[0-9]?)' | grep -vE ^${root_devname} | sort -u)"
     # Check if emmc exists
     [[ -z "${emmc}" ]] && error_msg "The eMMC storage not found in this device!"
     # Show the emmc name
@@ -79,7 +79,7 @@ do_checkspace() {
     fi
     # Check if there is enough free space
     if [[ "${remaining_space}" -lt "${need_space}" ]]; then
-        error_msg "The remaining space is [ ${remaining_space} ] Gb, and more than [ ${need_space} ] Gb space is required."
+        error_msg "There is not enough space left. Please use [ armbian-tf ] to expand first."
     fi
 }
 
